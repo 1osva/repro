@@ -31,6 +31,10 @@ document.addEventListener('DOMContentLoaded', () => {
   let libFilter = '';
   let prefetchedFor = null; // canción actual para la que ya se precargó la siguiente
   let mediaDurationFor = null; // canción cuya duración ya se envió a la notificación
+  let restorePending = null; // { pos } canción recordada de la última vez, lista para reanudar con Play
+  let sessionRestored = false;
+  const SESSION_KEY = 'nocturne.session.v1'; // última canción y segundo en que se quedó
+  const QUEUE_KEY = 'nocturne.queue.v1';     // orden de la cola (para conservar el modo aleatorio)
 
   const $ = (id) => document.getElementById(id);
   const dom = {
@@ -56,9 +60,9 @@ document.addEventListener('DOMContentLoaded', () => {
     eqBass: $('eqBass'), eqMid: $('eqMid'), eqTreble: $('eqTreble'), bassVal: $('bassVal'),
     volumeSlider: $('volumeSlider'), btnMute: $('btnMute'), volIconHigh: $('volIconHigh'), volIconMuted: $('volIconMuted'),
 
-    dropZone: $('dropZone'), fileInput: $('fileInput'),
+    dropZone: $('queueList'), fileInput: $('fileInput'),
     queueList: $('queueList'), queueCounter: $('queueCounter'), libSearch: $('libSearch'),
-    btnShuffleNow: $('btnShuffleNow'), btnClearQueue: $('btnClearQueue'), btnLoadDemos: $('btnLoadDemos'),
+    
 
     listsOverview: $('listsOverview'), listCards: $('listCards'), btnNewList: $('btnNewList'),
     listDetail: $('listDetail'), listDetailName: $('listDetailName'), listDetailCount: $('listDetailCount'),
@@ -301,8 +305,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
   let playRequestId = 0;
 
-  async function playTrackAtIndex(index, forceImmediate = false) {
+  async function playTrackAtIndex(index, forceImmediate = false, startAt = 0) {
     if (index < 0 || index >= playlist.length) return;
+    restorePending = null; // ya se eligió qué sonar: la canción recordada deja de estar "pendiente"
 
     const requestId = ++playRequestId;
     currentTrackIndex = index;
@@ -330,6 +335,22 @@ document.addEventListener('DOMContentLoaded', () => {
     audioEngine.playTrack(track, forceImmediate);
     prefetchedFor = null;
     mediaDurationFor = null;
+
+    // Reanudar donde se quedó la última vez: se salta a ese segundo en cuanto el archivo está listo
+    if (startAt > 1) {
+      const player = audioEngine.getActivePlayer();
+      const jump = () => {
+        if (player.track !== track) return; // mientras tanto se eligió otra canción
+        const a = player.audio;
+        if (a && isFinite(a.duration) && startAt < a.duration - 1) {
+          try { a.currentTime = startAt; } catch (e) { /* sin salto: empieza desde el principio */ }
+        }
+      };
+      if (player.audio.readyState >= 1 && player.track === track && player.audio.src === track.url) jump();
+      else player.audio.addEventListener('loadedmetadata', jump, { once: true });
+    }
+    saveQueue();
+    saveSession(startAt);
 
     // 2) Texto y estado al instante (es barato)…
     dom.currentTitle.textContent = track.title;
@@ -430,6 +451,7 @@ document.addEventListener('DOMContentLoaded', () => {
     dom.miniPauseIcon.style.display = playing ? 'block' : 'none';
     dom.engineStatusText.textContent = playing ? 'En reproducción' : 'Pausa';
     syncMedia();
+    if (!playing) saveSession();
   }
 
   function togglePlayPause() {
@@ -448,6 +470,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
     if (currentTrackIndex === -1) {
       playTrackAtIndex(0);
+      return;
+    }
+
+    if (restorePending && currentTrack()) {
+      playTrackAtIndex(currentTrackIndex, true, restorePending.pos);
       return;
     }
 
@@ -668,9 +695,9 @@ document.addEventListener('DOMContentLoaded', () => {
       if (status === 'ready') {
         empty = '<div class="empty-state">Aún no hay música.<br>Pulsa <strong>Buscar música</strong> para traer las canciones de tu teléfono.</div>';
       } else if (status === 'missing-plugin') {
-        empty = '<div class="empty-state"><strong>Este APK no incluye la búsqueda de música.</strong><br>Vuelve a compilarlo con la última versión. Mientras tanto, usa <strong>Agregar archivos</strong>.</div>';
+        empty = '<div class="empty-state"><strong>Este APK no incluye la búsqueda de música.</strong><br>Vuelve a compilarlo con la última versión. Mientras tanto, usa el menú ⋮ → <strong>Agregar archivos de audio</strong>.</div>';
       } else {
-        empty = '<div class="empty-state">Aún no hay música.<br>Usa <strong>Agregar archivos</strong> o carga las <strong>Demos</strong> para empezar.</div>';
+        empty = '<div class="empty-state">Aún no hay música.<br>Usa el menú ⋮ → <strong>Agregar archivos de audio</strong> para empezar.</div>';
       }
     } else if (shown.length === 0) {
       empty = `<div class="empty-state">Sin resultados para <strong>«${escapeHtml(libFilter.trim())}»</strong>.</div>`;
@@ -1119,7 +1146,6 @@ document.addEventListener('DOMContentLoaded', () => {
         sheetItem(body, { icon: ICON.refresh, label: 'Buscar música en el teléfono', onClick: () => { closeSheet(); scanLibrary(); } });
       }
       sheetItem(body, { icon: ICON.upload, label: 'Agregar archivos de audio', onClick: () => { closeSheet(); dom.fileInput.click(); } });
-      sheetItem(body, { icon: ICON.play, label: 'Cargar pistas demo', onClick: () => { closeSheet(); loadDemoTracks(); } });
       sheetItem(body, { icon: ICON.gear, label: 'Ajustes', onClick: () => { closeSheet(); openSettings(); } });
     });
   });
@@ -1136,6 +1162,7 @@ document.addEventListener('DOMContentLoaded', () => {
       dom.progressFill.style.width = `${pct}%`;
       dom.progressHandle.style.left = `${pct}%`;
       dom.miniProgressFill.style.width = `${pct}%`;
+      saveSessionSoon();
 
       // Precargar la siguiente cuando faltan ~35 s (o, en pistas cortas, a mitad)
       const remaining = duration - current;
@@ -1196,9 +1223,9 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     if (current) currentTrackIndex = playlist.findIndex(t => t.id === current.id);
+    saveQueue();
   }
 
-  dom.btnShuffleNow.addEventListener('click', executeShuffle);
   dom.btnShuffle.addEventListener('click', () => {
     dom.btnShuffle.classList.toggle('active');
     executeShuffle();
@@ -1334,13 +1361,6 @@ document.addEventListener('DOMContentLoaded', () => {
     showToast('Biblioteca vaciada.');
   }
 
-  dom.btnClearQueue.addEventListener('click', () => {
-    if (library.length === 0) { showToast('No hay nada que vaciar.'); return; }
-    confirmSheet('¿Vaciar la biblioteca?',
-      'Solo se quita de la app. No borra canciones de tu teléfono ni tus listas.',
-      'Vaciar', clearEverything);
-  });
-
   async function parseInBatches(files, size) {
     const out = [];
     for (let i = 0; i < files.length; i += size) {
@@ -1410,11 +1430,6 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
-  function loadDemoTracks() {
-    addTracks(MetadataParser.getDemoTracks(), true);
-  }
-  dom.btnLoadDemos.addEventListener('click', loadDemoTracks);
-
   // ---------------------------------------------------------------------------
   // Atajos de teclado (escritorio)
   // ---------------------------------------------------------------------------
@@ -1460,6 +1475,95 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function storageGet(key) { try { return localStorage.getItem(key); } catch (e) { return null; } }
   function storageSet(key, value) { try { localStorage.setItem(key, value); } catch (e) { /* sin almacenamiento */ } }
+
+  // ---------------------------------------------------------------------------
+  // Memoria del reproductor: recuerda la canción, el segundo y el orden de la cola.
+  // Al abrir la app muestra esa canción en pausa; al pulsar Play sigue desde ese punto.
+  // ---------------------------------------------------------------------------
+  function readJson(key) { try { return JSON.parse(storageGet(key)); } catch (e) { return null; } }
+
+  function saveQueue() {
+    const ids = playlist.filter(t => t.contentUri).map(t => t.id);
+    if (ids.length) storageSet(QUEUE_KEY, JSON.stringify({ ids, src: queueSource }));
+  }
+
+  /** Guarda la canción actual y su posición. Solo canciones del teléfono (las demás no sobreviven al cerrar la app). */
+  function saveSession(posOverride) {
+    if (restorePending) return; // aún no se reanuda: se conserva lo recordado
+    const t = currentTrack();
+    if (!t || !t.contentUri) return;
+    let pos = posOverride;
+    if (typeof pos !== 'number') {
+      const p = (audioEngine.players || []).find(pl => pl.track && pl.track.id === t.id) || audioEngine.getActivePlayer();
+      const a = p && p.audio;
+      pos = a ? (a.currentTime || 0) : 0;
+      const dur = a && isFinite(a.duration) && a.duration > 0 ? a.duration : (t.duration || 0);
+      if (dur && pos > dur - 2) pos = 0; // la canción terminó: la próxima vez empieza de cero
+    }
+    storageSet(SESSION_KEY, JSON.stringify({ id: t.id, pos: Math.round(pos * 10) / 10, src: queueSource }));
+  }
+
+  let lastSessionSave = 0;
+  function saveSessionSoon() {
+    const now = Date.now();
+    if (now - lastSessionSave < 3000) return;
+    lastSessionSave = now;
+    saveSession();
+  }
+
+  document.addEventListener('visibilitychange', () => { if (document.hidden) saveSession(); });
+  window.addEventListener('pagehide', () => saveSession());
+
+  /** Pone en pantalla (en pausa) la canción que sonaba la última vez. Se hace una sola vez, al traer la biblioteca. */
+  function restoreSession() {
+    if (sessionRestored) return;
+    sessionRestored = true;
+    if (currentTrack() || isPlaying) return;
+
+    const saved = readJson(SESSION_KEY);
+    if (!saved || saved.id === undefined) return;
+    const byId = new Map(library.map(t => [String(t.id), t]));
+    const track = byId.get(String(saved.id));
+    if (!track) return; // la canción ya no está en el teléfono
+
+    let queue = null;
+    let source = 'library';
+    const q = readJson(QUEUE_KEY);
+    if (q && Array.isArray(q.ids)) {
+      const tracks = q.ids.map(id => byId.get(String(id))).filter(Boolean);
+      const sourceOk = q.src === 'library' || !!NocturneLists.get(q.src);
+      if (sourceOk && tracks.indexOf(track) >= 0) { queue = tracks; source = q.src; }
+    }
+    if (!queue) { queue = library.slice(); source = 'library'; }
+
+    playlist = queue;
+    queueSource = source;
+    currentTrackIndex = playlist.indexOf(track);
+    if (currentTrackIndex < 0) { currentTrackIndex = -1; return; }
+
+    const pos = Math.max(0, Number(saved.pos) || 0);
+    restorePending = { pos };
+
+    updateNowPlayingUI(track);
+    markActiveRows();
+    const dur = track.duration || 0;
+    dom.currentTime.textContent = formatTime(pos);
+    dom.durationTime.textContent = formatTime(dur);
+    if (dur > 0) {
+      const pct = Math.min(100, (pos / dur) * 100);
+      dom.progressFill.style.width = `${pct}%`;
+      dom.progressHandle.style.left = `${pct}%`;
+      dom.miniProgressFill.style.width = `${pct}%`;
+    }
+
+    // Portada en miniatura mientras la canción completa no se ha cargado
+    const showThumb = (t) => {
+      if (currentTrack() !== t || t.cover || !t.thumb) return;
+      [dom.barCover, dom.currentCover].forEach((el) => { el.style.backgroundImage = `url("${t.thumb}")`; el.innerHTML = ''; });
+    };
+    showThumb(track);
+    NocturneLibrary.requestThumb(track, showThumb);
+  }
 
   // Permiso de fotos (portadas): se pide una sola vez, justo después de traer la música.
   // Las portadas se intentan cargar de todos modos; el permiso solo ayuda en algunos teléfonos.
@@ -1509,6 +1613,7 @@ document.addEventListener('DOMContentLoaded', () => {
     renderListCards();
     if (currentListId) renderListDetail();
 
+    restoreSession();
     showIdleInfo();
   }
 
@@ -1539,7 +1644,7 @@ document.addEventListener('DOMContentLoaded', () => {
     try {
       const scanned = await NocturneLibrary.scan();
       if (scanned.length === 0) {
-        if (!silent) showToast('No encontré música. Prueba con "Agregar archivos".');
+        if (!silent) showToast('No encontré música. Prueba con el menú ⋮ → Agregar archivos de audio.');
       } else {
         setLibraryTracks(scanned);
         storageSet(COUNT_KEY, String(scanned.length));
