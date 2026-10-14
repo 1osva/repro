@@ -143,7 +143,35 @@ const NocturneMediaControls = (() => {
     });
   }
 
-  return { status, isAvailable, setProvider, sync, stop, onAction, notificationPermission };
+
+  /** Espera a que termine el pedido de permiso de notificaciones (si hubo uno). */
+  function whenPermissionHandled() {
+    return permissionStep || Promise.resolve();
+  }
+
+  /** ¿La app puede seguir reproduciendo en segundo plano sin restricciones de batería? null = no se puede saber. */
+  async function batteryUnrestricted() {
+    const plugin = getPlugin();
+    if (!plugin || typeof plugin.isIgnoringBatteryOptimizations !== 'function') return null;
+    try {
+      const r = await plugin.isIgnoringBatteryOptimizations();
+      return !!(r && r.ignoring);
+    } catch (e) {
+      return null;
+    }
+  }
+
+  /** Muestra el aviso del sistema para quitar la restricción de batería. */
+  async function requestBatteryExemption() {
+    const plugin = getPlugin();
+    if (!plugin || typeof plugin.requestIgnoreBatteryOptimizations !== 'function') return;
+    try { await plugin.requestIgnoreBatteryOptimizations(); } catch (e) { /* el usuario lo puede activar en Ajustes */ }
+  }
+
+  return {
+    status, isAvailable, setProvider, sync, stop, onAction, notificationPermission,
+    whenPermissionHandled, batteryUnrestricted, requestBatteryExemption
+  };
 })();
 
 window.NocturneMediaControls = NocturneMediaControls;

@@ -1,9 +1,15 @@
 package __APP_PACKAGE__;
 
+import android.content.ActivityNotFoundException;
+import android.content.Context;
+import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.net.Uri;
 import android.os.Build;
+import android.os.PowerManager;
+import android.provider.Settings;
 import android.util.Base64;
 
 import com.getcapacitor.JSObject;
@@ -21,6 +27,8 @@ import com.getcapacitor.annotation.PermissionCallback;
  *   .update({ title, artist, album, duration, position, playing, cover })
  *   .stop()
  *   .hasNotificationPermission() / .requestNotificationPermission()
+ *   .isIgnoringBatteryOptimizations() / .requestIgnoreBatteryOptimizations()
+ *       (para que Android no corte la música al salir de la app o apagar la pantalla)
  *   .addListener('mediaAction', ({ action, position }) => ...)
  *       action: 'play' | 'pause' | 'next' | 'previous' | 'seek' | 'stop'
  */
@@ -121,6 +129,54 @@ public class MediaControlsPlugin extends Plugin {
     private void onNotificationPermissionResult(PluginCall call) {
         JSObject result = new JSObject();
         result.put("granted", canNotify());
+        call.resolve(result);
+    }
+
+    // ------------------------------------------------------------------ segundo plano (ahorro de batería)
+
+    private boolean ignoringBatteryOptimizations() {
+        if (Build.VERSION.SDK_INT < 23) return true; // no existe el ahorro agresivo en versiones anteriores
+        PowerManager pm = (PowerManager) getContext().getSystemService(Context.POWER_SERVICE);
+        return pm != null && pm.isIgnoringBatteryOptimizations(getContext().getPackageName());
+    }
+
+    /** Devuelve { ignoring: boolean }: true si la app ya está exenta del ahorro de batería. */
+    @PluginMethod
+    public void isIgnoringBatteryOptimizations(PluginCall call) {
+        JSObject result = new JSObject();
+        result.put("ignoring", ignoringBatteryOptimizations());
+        call.resolve(result);
+    }
+
+    /**
+     * Muestra el aviso del sistema "¿Permitir que la app funcione siempre en segundo plano?".
+     * Si el teléfono no lo trae, abre la lista de ajustes de optimización de batería.
+     */
+    @PluginMethod
+    public void requestIgnoreBatteryOptimizations(PluginCall call) {
+        JSObject result = new JSObject();
+        if (ignoringBatteryOptimizations()) {
+            result.put("ignoring", true);
+            call.resolve(result);
+            return;
+        }
+        Context context = getContext();
+        try {
+            Intent intent = new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS);
+            intent.setData(Uri.parse("package:" + context.getPackageName()));
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            context.startActivity(intent);
+        } catch (ActivityNotFoundException | SecurityException e) {
+            try {
+                Intent fallback = new Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS);
+                fallback.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                context.startActivity(fallback);
+            } catch (Exception e2) {
+                call.reject("No se pudieron abrir los ajustes de batería: " + e2.getMessage(), e2);
+                return;
+            }
+        }
+        result.put("ignoring", false); // la persona decide en el aviso; se vuelve a consultar después
         call.resolve(result);
     }
 }

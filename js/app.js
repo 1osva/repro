@@ -69,7 +69,7 @@ document.addEventListener('DOMContentLoaded', () => {
     toast: $('nocturneToast'),
     app: $('app'), player: $('screenHome'), btnPlayerClose: $('btnPlayerClose'), btnMiniNext: $('btnMiniNext'),
     miniProgressFill: $('miniProgressFill'), btnSettingsBack: $('btnSettingsBack'),
-    aboutBuild: $('aboutBuild'), aboutMusic: $('aboutMusic'), aboutNotif: $('aboutNotif'),
+    aboutBuild: $('aboutBuild'), aboutMusic: $('aboutMusic'), aboutNotif: $('aboutNotif'), aboutCovers: $('aboutCovers'), aboutBackground: $('aboutBackground'),
     vizEnabledToggle: $('vizEnabledToggle'),
     tabs: document.querySelectorAll('.main-tab'),
     screens: document.querySelectorAll('.screen'),
@@ -337,6 +337,7 @@ document.addEventListener('DOMContentLoaded', () => {
     dom.barTitle.textContent = track.title;
     dom.barArtist.textContent = artistLabel(track);
     setPlayingState(true);
+    askBatteryExemptionOnce();
 
     // 3) …y lo pesado (portada, colores, filas, memoria) un instante después, ya con el audio sonando
     setTimeout(() => {
@@ -558,10 +559,11 @@ document.addEventListener('DOMContentLoaded', () => {
   // Listas de canciones (biblioteca y detalle de lista)
   // ---------------------------------------------------------------------------
   function rowHtml(t, idx) {
-    const cover = t.cover ? ` style="background-image:url('${escapeHtml(t.cover)}')"` : '';
+    const img = t.cover || t.thumb;
+    const cover = img ? ` style="background-image:url('${escapeHtml(img)}')"` : '';
     return `
       <div class="track-row" data-index="${idx}" data-id="${escapeHtml(t.id)}">
-        <div class="track-row-cover"${cover}>${t.cover ? '' : '♪'}</div>
+        <div class="track-row-cover"${cover}>${img ? '' : '♪'}</div>
         <div class="track-row-info">
           <div class="track-row-title">${escapeHtml(t.title)}</div>
           <div class="track-row-artist">${escapeHtml(artistLabel(t))}</div>
@@ -571,10 +573,35 @@ document.addEventListener('DOMContentLoaded', () => {
       </div>`;
   }
 
+  // Portadas de la biblioteca del teléfono: se piden solo para las filas que aparecen en pantalla
+  const coverObserver = ('IntersectionObserver' in window)
+    ? new IntersectionObserver((entries) => {
+        entries.forEach((entry) => {
+          if (!entry.isIntersecting) return;
+          const row = entry.target;
+          coverObserver.unobserve(row);
+          const tracks = row.parentElement && row.parentElement._tracks;
+          const track = tracks && tracks[parseInt(row.dataset.index, 10)];
+          if (track) NocturneLibrary.requestThumb(track, refreshTrackRows);
+        });
+      }, { rootMargin: '240px 0px' })
+    : null;
+
+  function observeCovers(container) {
+    if (!coverObserver || !NocturneLibrary.thumbsSupported()) return;
+    const tracks = container._tracks || [];
+    container.querySelectorAll('.track-row').forEach((row) => {
+      const track = tracks[parseInt(row.dataset.index, 10)];
+      if (NocturneLibrary.needsThumb(track)) coverObserver.observe(row);
+    });
+  }
+
   function renderTrackList(container, tracks, emptyHtml) {
+    if (coverObserver) container.querySelectorAll('.track-row').forEach(r => coverObserver.unobserve(r));
     container._tracks = tracks;
     container.innerHTML = tracks.length ? tracks.map(rowHtml).join('') : (emptyHtml || '');
     markActiveRows();
+    observeCovers(container);
   }
 
   function bindTrackList(container, getSource) {
@@ -612,8 +639,9 @@ document.addEventListener('DOMContentLoaded', () => {
       const row = c.querySelector(`.track-row[data-id="${id}"]`);
       if (!row) return;
       const cover = row.querySelector('.track-row-cover');
-      if (cover && track.cover) {
-        cover.style.backgroundImage = `url('${track.cover}')`;
+      const img = track.cover || track.thumb;
+      if (cover && img) {
+        cover.style.backgroundImage = `url('${img}')`;
         cover.textContent = '';
       }
       const artist = row.querySelector('.track-row-artist');
@@ -1433,6 +1461,41 @@ document.addEventListener('DOMContentLoaded', () => {
   function storageGet(key) { try { return localStorage.getItem(key); } catch (e) { return null; } }
   function storageSet(key, value) { try { localStorage.setItem(key, value); } catch (e) { /* sin almacenamiento */ } }
 
+  // Permiso de fotos (portadas): se pide una sola vez, justo después de traer la música.
+  // Las portadas se intentan cargar de todos modos; el permiso solo ayuda en algunos teléfonos.
+  const IMAGES_ASKED_KEY = 'nocturne.imagesPermissionAsked';
+  async function askImagesPermissionOnce() {
+    if (storageGet(IMAGES_ASKED_KEY)) return;
+    storageSet(IMAGES_ASKED_KEY, '1');
+    try { await NocturneLibrary.ensureImagesPermission(); } catch (e) { /* se puede activar en Ajustes */ }
+  }
+
+  // Segundo plano: tras la primera reproducción se explica y se pide quitar la restricción de batería
+  // para que Android no corte la música al salir de la app o apagar la pantalla. Se muestra una sola vez.
+  const BATTERY_ASKED_KEY = 'nocturne.batteryPromptShown';
+  async function askBatteryExemptionOnce() {
+    if (!NocturneMediaControls.isAvailable() || storageGet(BATTERY_ASKED_KEY)) return;
+    try {
+      await NocturneMediaControls.whenPermissionHandled(); // primero el aviso de notificaciones, si lo hay
+      const unrestricted = await NocturneMediaControls.batteryUnrestricted();
+      if (unrestricted === null) return; // este APK no trae el módulo nuevo: nada que pedir
+      if (unrestricted) { storageSet(BATTERY_ASKED_KEY, '1'); return; }
+      await new Promise(resolve => setTimeout(resolve, 1200));
+      if (document.hidden || sheetOpen) return; // se vuelve a intentar en la próxima reproducción
+      storageSet(BATTERY_ASKED_KEY, '1');
+      openSheet('Música en segundo plano', (body) => {
+        const pText = document.createElement('p');
+        pText.className = 'sheet-text';
+        pText.textContent = 'Para que la música siga sonando sin interrupciones cuando salgas de la app o apagues la pantalla, permite que Nocturne funcione sin restricciones de batería.';
+        body.appendChild(pText);
+        sheetActions(body, [
+          { label: 'Ahora no', onClick: closeSheet },
+          { label: 'Permitir', primary: true, onClick: () => { closeSheet(); NocturneMediaControls.requestBatteryExemption(); } }
+        ]);
+      });
+    } catch (e) { /* no es crítico */ }
+  }
+
   /** Reemplaza las pistas del teléfono conservando las añadidas a mano y la que suena. */
   function setLibraryTracks(scanned) {
     const known = new Map(library.filter(t => t.contentUri).map(t => [t.contentUri, t]));
@@ -1484,6 +1547,7 @@ document.addEventListener('DOMContentLoaded', () => {
           showToast(`${plural(scanned.length, 'canción encontrada', 'canciones encontradas')}.`);
         }
         storageSet(FIRST_SCAN_KEY, '1');
+        askImagesPermissionOnce();
       }
     } catch (e) {
       console.warn('Escaneo de biblioteca falló:', e);
@@ -1541,6 +1605,20 @@ document.addEventListener('DOMContentLoaded', () => {
       dom.aboutNotif.textContent = 'Notificación de reproducción: NO incluida en este APK (falta recompilar)';
     } else {
       dom.aboutNotif.textContent = 'Notificación de reproducción: solo disponible en la app Android';
+    }
+    if (libStatus === 'ready') {
+      const imgOk = await NocturneLibrary.hasImagesPermission();
+      dom.aboutCovers.textContent = `Portadas: ${NocturneLibrary.thumbsSupported() ? (imgOk ? 'permiso de fotos concedido' : 'sin permiso de fotos (se intentan cargar igual)') : 'NO incluidas en este APK (falta recompilar)'}`;
+    } else {
+      dom.aboutCovers.textContent = 'Portadas: solo disponibles en la app Android';
+    }
+    if (notif === 'ready') {
+      const free = await NocturneMediaControls.batteryUnrestricted();
+      dom.aboutBackground.textContent = free === null
+        ? 'Segundo plano: NO incluido en este APK (falta recompilar)'
+        : `Segundo plano: ${free ? 'sin restricciones de batería' : 'con restricción de batería (puede cortarse la música)'}`;
+    } else {
+      dom.aboutBackground.textContent = 'Segundo plano: solo disponible en la app Android';
     }
     if (libStatus === 'ready') {
       const granted = await NocturneLibrary.hasPermission();
