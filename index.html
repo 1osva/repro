@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="theme-color" content="#070714">
+  <title>Nocturne Player — Modern Dark Audio</title>
+  <link rel="stylesheet" href="css/fonts.css">
+  <link rel="stylesheet" href="css/styles.css">
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" href="icons/icon-192.png">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+</head>
+<body class="dark-theme">
+  <div class="background-ambient" id="ambientBg"></div>
+
+  <div class="app" id="app">
+
+    <!-- CABECERA -->
+    <header class="app-header">
+      <div class="brand">
+        <svg class="brand-logo" viewBox="0 0 32 32" width="34" height="34" aria-hidden="true">
+          <defs>
+            <linearGradient id="moonGrad" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0" stop-color="#9d8bff"/>
+              <stop offset="1" stop-color="#4d7cff"/>
+            </linearGradient>
+          </defs>
+          <path d="M26 17.5A11 11 0 1 1 14.5 6a8.6 8.6 0 0 0 11.5 11.5z" fill="url(#moonGrad)"/>
+        </svg>
+        <div class="brand-text">
+          <span class="brand-name">NOCTURNE</span>
+          <span class="brand-sub">AUDIO PLAYER</span>
+        </div>
+      </div>
+      <button class="icon-btn" id="btnTopMenu" type="button" aria-label="Más opciones">
+        <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor"><circle cx="12" cy="5" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="12" cy="19" r="1.8"/></svg>
+      </button>
+    </header>
+
+    <div class="seg main-tabs" id="mainTabs" role="tablist">
+      <button class="main-tab active" data-tab="library" type="button">Canciones</button>
+      <button class="main-tab" data-tab="lists" type="button">Listas</button>
+    </div>
+
+    <div class="screens">
+
+      <!-- ===================== BIBLIOTECA ===================== -->
+      <section class="screen active" id="screenLibrary" data-screen="library">
+        <div class="screen-head">
+          <h1>Biblioteca</h1>
+          <span class="count-pill" id="queueCounter">0 canciones</span>
+        </div>
+
+        <label class="search" for="libSearch">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          <input id="libSearch" type="search" placeholder="Buscar canción, artista o álbum" autocomplete="off" autocapitalize="off" spellcheck="false">
+        </label>
+
+        <div class="chip-row">
+          <div id="librarySection" hidden>
+            <button class="chip chip-primary" id="btnScanLibrary" type="button">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12a9 9 0 1 1-3-6.7"/><polyline points="21 3 21 9 15 9"/></svg>
+              Buscar música
+            </button>
+          </div>
+          <label class="chip" for="fileInput" id="dropZone">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+            Agregar archivos
+            <input type="file" id="fileInput" multiple accept="audio/*" style="display:none;">
+          </label>
+          <button class="chip" id="btnShuffleNow" type="button">Smart Shuffle</button>
+          <button class="chip" id="btnLoadDemos" type="button">Demos</button>
+          <button class="chip chip-danger" id="btnClearQueue" type="button">Vaciar</button>
+        </div>
+
+        <div class="track-list" id="queueList"></div>
+      </section>
+
+      <!-- ===================== LISTAS ===================== -->
+      <section class="screen" id="screenLists" data-screen="lists" hidden>
+        <div id="listsOverview">
+          <div class="screen-head">
+            <h1>Listas</h1>
+            <button class="chip chip-primary" id="btnNewList" type="button">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+              Nueva lista
+            </button>
+          </div>
+          <div class="list-cards" id="listCards"></div>
+        </div>
+
+        <div id="listDetail" hidden>
+          <div class="detail-head">
+            <button class="icon-btn" id="btnListBack" type="button" aria-label="Volver a Listas">
+              <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+            </button>
+            <div class="detail-title">
+              <h1 id="listDetailName">Lista</h1>
+              <span id="listDetailCount">0 canciones</span>
+            </div>
+            <button class="icon-btn" id="btnListMenu" type="button" aria-label="Opciones de la lista">
+              <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor"><circle cx="12" cy="5" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="12" cy="19" r="1.8"/></svg>
+            </button>
+          </div>
+          <div class="chip-row">
+            <button class="chip chip-primary" id="btnListPlay" type="button">Reproducir</button>
+            <button class="chip" id="btnListShuffle" type="button">Aleatorio</button>
+            <button class="chip" id="btnListAdd" type="button">+ Agregar</button>
+          </div>
+          <p class="muted-note" id="listMissing" hidden></p>
+          <div class="track-list" id="listTracks"></div>
+        </div>
+      </section>
+
+      <!-- ===================== AJUSTES ===================== -->
+      <section class="screen" id="screenSettings" data-screen="settings" hidden>
+        <div class="detail-head">
+          <button class="icon-btn" id="btnSettingsBack" type="button" aria-label="Volver">
+            <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+          </button>
+          <div class="detail-title"><h1>Ajustes</h1></div>
+        </div>
+
+        <div class="card">
+          <h3>Volumen</h3>
+          <div class="volume-row">
+            <button class="icon-btn" id="btnMute" type="button" aria-label="Silenciar">
+              <svg id="volIconHigh" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>
+              <svg id="volIconMuted" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:none;"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg>
+            </button>
+            <input type="range" id="volumeSlider" min="0" max="1" step="0.01" value="0.8" class="custom-slider">
+          </div>
+        </div>
+
+        <div class="card">
+          <h3>Transiciones</h3>
+          <div class="control-row">
+            <div class="control-label"><span>Crossfade (fundido entre canciones)</span><span class="badge" id="crossfadeVal">3.5s</span></div>
+            <input type="range" id="crossfadeSlider" min="0" max="8" step="0.5" value="3.5" class="custom-slider">
+          </div>
+          <div class="control-row">
+            <div class="control-label"><span>Fade in (aparición gradual)</span><span class="badge" id="fadeInVal">1.8s</span></div>
+            <input type="range" id="fadeInSlider" min="0" max="5" step="0.2" value="1.8" class="custom-slider">
+          </div>
+        </div>
+
+        <div class="card">
+          <h3>Aleatorio</h3>
+          <div class="control-row">
+            <div class="control-label">
+              <span>Smart Shuffle (evita repetir artista)</span>
+              <input type="checkbox" id="smartShuffleToggle" class="switch" checked>
+            </div>
+            <p class="muted-note" id="algoStatus">Dispersión inteligente activa: previene artistas consecutivos y equilibra la variedad.</p>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3>Visualizador</h3>
+          <div class="control-row">
+            <div class="control-label">
+              <span>Animación de las barras</span>
+              <input type="checkbox" id="vizEnabledToggle" class="switch" checked>
+            </div>
+            <p class="muted-note">Apágala para ahorrar batería. Si notas cortes en la música, prueba sin ella para saber si el visualizador influye.</p>
+          </div>
+          <div class="control-row">
+            <div class="control-label"><span>Sincronía de las barras</span><span class="badge" id="vizDelayVal">Auto</span></div>
+            <input type="range" id="vizDelaySlider" min="0" max="500" step="10" value="0" class="custom-slider">
+            <p class="muted-note">La app ya compensa el retraso de salida del teléfono. Si las barras se adelantan al sonido (por ejemplo con audífonos Bluetooth), súbelo hasta que coincidan con el ritmo.</p>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3>Ecualizador <span class="badge" id="bassVal">Bass: +3dB</span></h3>
+          <div class="control-row">
+            <div class="control-label"><span>Graves</span></div>
+            <input type="range" id="eqBass" min="-10" max="10" step="1" value="3" class="custom-slider">
+          </div>
+          <div class="control-row">
+            <div class="control-label"><span>Medios</span></div>
+            <input type="range" id="eqMid" min="-10" max="10" step="1" value="0" class="custom-slider">
+          </div>
+          <div class="control-row">
+            <div class="control-label"><span>Agudos</span></div>
+            <input type="range" id="eqTreble" min="-10" max="10" step="1" value="2" class="custom-slider">
+          </div>
+        </div>
+
+        <div class="card">
+          <h3>Acerca de</h3>
+          <p class="about-line" id="aboutBuild">Versión de desarrollo</p>
+          <p class="about-line" id="aboutMusic">Música del teléfono: …</p>
+          <p class="about-line" id="aboutNotif">Notificación de reproducción: …</p>
+          <p class="about-line">Funciona sin internet.</p>
+        </div>
+      </section>
+    </div>
+
+    <!-- BARRA INFERIOR: toca para desplegar el reproductor -->
+    <div class="mini-player" id="miniPlayer">
+      <div class="mini-progress"><div id="miniProgressFill"></div></div>
+      <div class="mini-open" id="miniInfo" role="button" tabindex="0" aria-label="Abrir el reproductor">
+        <div class="mini-cover" id="barCover">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
+        </div>
+        <div class="mini-info">
+          <div class="mini-title" id="barTitle">Elige una canción</div>
+          <div class="mini-artist" id="barArtist">Nocturne Audio</div>
+        </div>
+      </div>
+      <button class="icon-btn" id="btnMiniPlay" type="button" aria-label="Reproducir o pausar">
+        <svg id="miniPlayIcon" viewBox="0 0 24 24" width="26" height="26" fill="currentColor"><polygon points="7 3.5 20 12 7 20.5 7 3.5"/></svg>
+        <svg id="miniPauseIcon" viewBox="0 0 24 24" width="26" height="26" fill="currentColor" style="display:none;"><rect x="6" y="4" width="4.2" height="16" rx="1"/><rect x="13.8" y="4" width="4.2" height="16" rx="1"/></svg>
+      </button>
+      <button class="icon-btn" id="btnMiniNext" type="button" aria-label="Siguiente">
+        <svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><polygon points="5 4 15 12 5 20 5 4"/><rect x="17.4" y="4" width="2.6" height="16" rx="1"/></svg>
+      </button>
+    </div>
+
+    <!-- ===================== REPRODUCTOR (se despliega a pantalla completa) ===================== -->
+    <section class="player" id="screenHome" aria-hidden="true">
+      <div class="player-top" id="playerTop">
+        <button class="icon-btn" id="btnPlayerClose" type="button" aria-label="Minimizar el reproductor">
+          <svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+        </button>
+        <span class="player-top-title">REPRODUCIENDO</span>
+        <span class="spacer" aria-hidden="true"></span>
+      </div>
+
+        <div class="hero visualizer-container">
+          <canvas id="visualizerCanvas"></canvas>
+          <div class="crossfade-indicator" id="crossfadeBadge">X-FADE 3.5s</div>
+        </div>
+
+        <div class="now-row">
+          <div class="cover-art" id="currentCover">
+            <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
+          </div>
+          <div class="now-info">
+            <h2 class="track-title" id="currentTitle">Elige una canción</h2>
+            <p class="track-artist" id="currentArtist">Nocturne Sound Engine</p>
+          </div>
+          <button class="icon-btn" id="btnFavorite" type="button" aria-label="Marcar como favorita" aria-pressed="false">
+            <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z"/></svg>
+          </button>
+          <button class="icon-btn" id="btnTrackMenu" type="button" aria-label="Más opciones de la canción">
+            <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor"><circle cx="12" cy="5" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="12" cy="19" r="1.8"/></svg>
+          </button>
+        </div>
+
+        <div class="progress-block">
+          <div class="progress-track" id="progressTrack">
+            <div class="progress-fill" id="progressFill"></div>
+            <div class="progress-handle" id="progressHandle"></div>
+            <div class="crossfade-zone" id="crossfadeZone"></div>
+          </div>
+          <div class="time-row">
+            <span class="time-label" id="currentTime">0:00</span>
+            <span class="time-label" id="durationTime">0:00</span>
+          </div>
+        </div>
+
+        <div class="controls">
+          <button class="btn-ctrl" id="btnShuffle" type="button" aria-label="Aleatorio inteligente">
+            <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 3 21 3 21 8"/><line x1="4" y1="20" x2="21" y2="3"/><polyline points="21 16 21 21 16 21"/><line x1="15" y1="15" x2="21" y2="21"/><line x1="4" y1="4" x2="9" y2="9"/></svg>
+          </button>
+          <button class="btn-ctrl" id="btnPrev" type="button" aria-label="Anterior">
+            <svg viewBox="0 0 24 24" width="28" height="28" fill="currentColor"><polygon points="19 20 9 12 19 4 19 20"/><rect x="4" y="4" width="2.6" height="16" rx="1"/></svg>
+          </button>
+          <button class="btn-ctrl btn-play" id="btnPlay" type="button" aria-label="Reproducir o pausar">
+            <svg id="playIcon" viewBox="0 0 24 24" width="30" height="30" fill="currentColor"><polygon points="7 3.5 20 12 7 20.5 7 3.5"/></svg>
+            <svg id="pauseIcon" viewBox="0 0 24 24" width="30" height="30" fill="currentColor" style="display:none;"><rect x="6" y="4" width="4.2" height="16" rx="1"/><rect x="13.8" y="4" width="4.2" height="16" rx="1"/></svg>
+          </button>
+          <button class="btn-ctrl" id="btnNext" type="button" aria-label="Siguiente">
+            <svg viewBox="0 0 24 24" width="28" height="28" fill="currentColor"><polygon points="5 4 15 12 5 20 5 4"/><rect x="17.4" y="4" width="2.6" height="16" rx="1"/></svg>
+          </button>
+          <button class="btn-ctrl" id="btnRepeat" type="button" aria-label="Repetir">
+            <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>
+            <span class="repeat-indicator" id="repeatIndicator"></span>
+          </button>
+        </div>
+
+        <div class="seg" role="group" aria-label="Estilo del visualizador">
+          <button class="v-mode-btn active" data-mode="bars" type="button">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><line x1="5" y1="20" x2="5" y2="13"/><line x1="10" y1="20" x2="10" y2="6"/><line x1="15" y1="20" x2="15" y2="10"/><line x1="20" y1="20" x2="20" y2="4"/></svg>
+            <span>Barras</span>
+          </button>
+          <button class="v-mode-btn" data-mode="wave" type="button">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="2 12 6 12 9 4 13 20 16 8 18 12 22 12"/></svg>
+            <span>Onda</span>
+          </button>
+          <button class="v-mode-btn" data-mode="circle" type="button">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="2.6" fill="currentColor" stroke="none"/></svg>
+            <span>Pulso</span>
+          </button>
+        </div>
+
+        <!-- Datos que usa el motor (no se muestran) -->
+        <div hidden>
+          <span id="currentAlbum"></span>
+          <span id="currentGenre"></span>
+          <span id="currentFormat"></span>
+          <span id="engineStatusText"></span>
+        </div>
+    </section>
+  </div>
+
+  <!-- HOJA INFERIOR (menús, elegir lista, nombres) -->
+  <div class="sheet-backdrop" id="sheetBackdrop" hidden></div>
+  <div class="sheet" id="sheet" role="dialog" aria-modal="true" aria-labelledby="sheetTitle" hidden>
+    <div class="sheet-handle"></div>
+    <h3 class="sheet-title" id="sheetTitle"></h3>
+    <div class="sheet-body" id="sheetBody"></div>
+  </div>
+
+  <div class="toast" id="nocturneToast" role="status" aria-live="polite"></div>
+
+  <!-- Scripts modulares -->
+  <script src="js/audio-engine.js"></script>
+  <script src="js/smart-shuffle.js"></script>
+  <script src="js/visualizer.js"></script>
+  <script src="js/metadata-parser.js"></script>
+  <script src="js/library.js"></script>
+  <script src="js/mediacontrols.js"></script>
+  <script src="js/lists.js"></script>
+  <script src="build-info.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
