@@ -569,17 +569,113 @@ document.addEventListener('DOMContentLoaded', () => {
     dom.btnFavorite.setAttribute('aria-pressed', String(fav));
   }
 
-  // La portada tiñe suavemente el fondo; los colores de la interfaz (iconos, botones)
-  // se mantienen fijos para que siempre haya buen contraste, sea cual sea la portada.
-  visualizer.onPaletteExtracted = (palette) => {
+  // ---------------------------------------------------------------------------
+  // Color de la portada → colores de la interfaz
+  // - Reproductor, barra de tiempo, botones y mini reproductor: color completo (--accent-*).
+  // - Pantallas de listas/biblioteca/ajustes: la misma idea pero más ligera (--soft-*).
+  // Los colores se ajustan para que siempre se lean bien sobre el fondo oscuro.
+  // ---------------------------------------------------------------------------
+  const THEME_VARS = [
+    '--accent-purple', '--accent-cyan', '--accent-purple-glow', '--accent-cyan-glow',
+    '--soft-purple', '--soft-cyan', '--soft-purple-glow', '--soft-cyan-glow'
+  ];
+  const DEFAULT_PRIMARY = { r: 139, g: 92, b: 246 };   // paleta de reposo del visualizador
+  const DEFAULT_SECONDARY = { r: 6, g: 182, b: 212 };
+  const sameRgb = (a, b) => a.r === b.r && a.g === b.g && a.b === b.b;
+  const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+
+  function rgbToHsl({ r, g, b }) {
+    r /= 255; g /= 255; b /= 255;
+    const max = Math.max(r, g, b), min = Math.min(r, g, b);
+    const l = (max + min) / 2;
+    let h = 0, sat = 0;
+    if (max !== min) {
+      const d = max - min;
+      sat = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+      if (max === r) h = ((g - b) / d + (g < b ? 6 : 0));
+      else if (max === g) h = (b - r) / d + 2;
+      else h = (r - g) / d + 4;
+      h *= 60;
+    }
+    return { h, s: sat, l };
+  }
+
+  function hslToRgb(h, sat, l) {
+    const c = (1 - Math.abs(2 * l - 1)) * sat;
+    const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
+    const m = l - c / 2;
+    let r = 0, g = 0, b = 0;
+    if (h < 60) { r = c; g = x; } else if (h < 120) { r = x; g = c; } else if (h < 180) { g = c; b = x; }
+    else if (h < 240) { g = x; b = c; } else if (h < 300) { r = x; b = c; } else { r = c; b = x; }
+    return { r: Math.round((r + m) * 255), g: Math.round((g + m) * 255), b: Math.round((b + m) * 255) };
+  }
+
+  function relLuminance({ r, g, b }) {
+    const f = (v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); };
+    return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b);
+  }
+
+  /** Lleva un color de la portada a un tono vivo y legible sobre el fondo oscuro (contraste ≥ 4.5). */
+  function readableAccent(rgb, soft) {
+    const hsl = rgbToHsl(rgb);
+    const sat = soft ? clamp(hsl.s * 0.55, 0.25, 0.60) : clamp(hsl.s, 0.55, 0.95);
+    let l = soft ? clamp(hsl.l, 0.70, 0.80) : clamp(hsl.l, 0.60, 0.72);
+    let out = hslToRgb(hsl.h, sat, l);
+    while (relLuminance(out) < 0.21 && l < 0.92) { l += 0.02; out = hslToRgb(hsl.h, sat, l); }
+    return out;
+  }
+
+  const rgbCss = (c) => `rgb(${c.r}, ${c.g}, ${c.b})`;
+  const rgbaCss = (c, a) => `rgba(${c.r}, ${c.g}, ${c.b}, ${a})`;
+
+  /** Aplica los colores de la portada a la interfaz. Devuelve los colores usados, o null si se usa la paleta de reposo. */
+  function applyCoverTheme(palette) {
+    const root = document.documentElement.style;
     const p = palette.primaryRgb;
-    const s = palette.secondaryRgb;
-    const tint = `
-      radial-gradient(circle at 18% 18%, rgba(${p.r}, ${p.g}, ${p.b}, 0.13) 0%, transparent 52%),
-      radial-gradient(circle at 85% 80%, rgba(${s.r}, ${s.g}, ${s.b}, 0.10) 0%, transparent 55%),
-      radial-gradient(circle at 20% 15%, rgba(124, 92, 255, 0.16) 0%, transparent 50%)`;
-    dom.ambientBg.style.background = `${tint}, radial-gradient(circle at 50% 50%, #0c0a22 0%, #070714 100%)`;
-    dom.player.style.background = `${tint}, #070714`;
+    if (sameRgb(p, DEFAULT_PRIMARY)) { // sin portada: colores originales
+      THEME_VARS.forEach(v => root.removeProperty(v));
+      return null;
+    }
+    let sec = palette.secondaryRgb;
+    if (sameRgb(sec, DEFAULT_SECONDARY)) { // la portada no tiene un segundo color: uno vecino al principal
+      const h = rgbToHsl(p);
+      sec = hslToRgb((h.h + 35) % 360, h.s, h.l);
+    }
+    const full = [readableAccent(p, false), readableAccent(sec, false)];
+    const soft = [readableAccent(p, true), readableAccent(sec, true)];
+    root.setProperty('--accent-purple', rgbCss(full[0]));
+    root.setProperty('--accent-cyan', rgbCss(full[1]));
+    root.setProperty('--accent-purple-glow', rgbaCss(full[0], 0.45));
+    root.setProperty('--accent-cyan-glow', rgbaCss(full[1], 0.45));
+    root.setProperty('--soft-purple', rgbCss(soft[0]));
+    root.setProperty('--soft-cyan', rgbCss(soft[1]));
+    root.setProperty('--soft-purple-glow', rgbaCss(soft[0], 0.22));
+    root.setProperty('--soft-cyan-glow', rgbaCss(soft[1], 0.22));
+    return { full, soft };
+  }
+
+  visualizer.onPaletteExtracted = (palette) => {
+    const theme = applyCoverTheme(palette);
+    let playerTint;
+    let listTint;
+    if (theme) {
+      const [a, b] = theme.full;
+      playerTint = `
+        radial-gradient(circle at 18% 16%, ${rgbaCss(a, 0.32)} 0%, transparent 56%),
+        radial-gradient(circle at 85% 82%, ${rgbaCss(b, 0.24)} 0%, transparent 58%)`;
+      listTint = `
+        radial-gradient(circle at 18% 18%, ${rgbaCss(a, 0.14)} 0%, transparent 52%),
+        radial-gradient(circle at 85% 80%, ${rgbaCss(b, 0.10)} 0%, transparent 55%)`;
+    } else {
+      const p = palette.primaryRgb;
+      const s = palette.secondaryRgb;
+      playerTint = listTint = `
+        radial-gradient(circle at 18% 18%, rgba(${p.r}, ${p.g}, ${p.b}, 0.13) 0%, transparent 52%),
+        radial-gradient(circle at 85% 80%, rgba(${s.r}, ${s.g}, ${s.b}, 0.10) 0%, transparent 55%),
+        radial-gradient(circle at 20% 15%, rgba(124, 92, 255, 0.16) 0%, transparent 50%)`;
+    }
+    dom.ambientBg.style.background = `${listTint}, radial-gradient(circle at 50% 50%, #0c0a22 0%, #070714 100%)`;
+    dom.player.style.background = `${playerTint}, #070714`;
   };
 
   // ---------------------------------------------------------------------------
@@ -1560,6 +1656,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const showThumb = (t) => {
       if (currentTrack() !== t || t.cover || !t.thumb) return;
       [dom.barCover, dom.currentCover].forEach((el) => { el.style.backgroundImage = `url("${t.thumb}")`; el.innerHTML = ''; });
+      visualizer.setCover(t.thumb); // y los colores de la interfaz toman el de la portada desde que se abre la app
     };
     showThumb(track);
     NocturneLibrary.requestThumb(track, showThumb);

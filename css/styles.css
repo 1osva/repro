@@ -612,3 +612,57 @@ html.lite *, html.lite *::before, html.lite *::after {
 
 .about-line { margin-top: 6px; font-size: 0.84rem; color: var(--text-secondary); line-height: 1.4; }
 .about-line:first-of-type { margin-top: 0; }
+
+/* ==========================================================================
+   COLOR DE LA PORTADA
+   js/app.js cambia --accent-* (reproductor, barra de tiempo, botones, mini reproductor)
+   y --soft-* (versión más ligera para las pantallas de biblioteca, listas y ajustes).
+   ========================================================================== */
+@property --accent-purple      { syntax: '<color>'; inherits: true; initial-value: #8b6cff; }
+@property --accent-cyan        { syntax: '<color>'; inherits: true; initial-value: #4d8cff; }
+@property --accent-purple-glow { syntax: '<color>'; inherits: true; initial-value: rgba(124, 92, 255, 0.45); }
+@property --accent-cyan-glow   { syntax: '<color>'; inherits: true; initial-value: rgba(77, 140, 255, 0.45); }
+@property --soft-purple        { syntax: '<color>'; inherits: true; initial-value: #a898ff; }
+@property --soft-cyan          { syntax: '<color>'; inherits: true; initial-value: #8fb0ff; }
+@property --soft-purple-glow   { syntax: '<color>'; inherits: true; initial-value: rgba(124, 92, 255, 0.22); }
+@property --soft-cyan-glow     { syntax: '<color>'; inherits: true; initial-value: rgba(77, 140, 255, 0.22); }
+
+:root {
+  --soft-purple: #a898ff;
+  --soft-cyan: #8fb0ff;
+  --soft-purple-glow: rgba(124, 92, 255, 0.22);
+  --soft-cyan-glow: rgba(77, 140, 255, 0.22);
+  /* el cambio de color entre canciones es gradual */
+  transition:
+    --accent-purple 0.7s ease, --accent-cyan 0.7s ease,
+    --accent-purple-glow 0.7s ease, --accent-cyan-glow 0.7s ease,
+    --soft-purple 0.7s ease, --soft-cyan 0.7s ease,
+    --soft-purple-glow 0.7s ease, --soft-cyan-glow 0.7s ease;
+}
+
+/* Biblioteca, listas y ajustes usan la versión ligera del color */
+.screens {
+  --accent-purple: var(--soft-purple);
+  --accent-cyan: var(--soft-cyan);
+  --accent-purple-glow: var(--soft-purple-glow);
+  --accent-cyan-glow: var(--soft-cyan-glow);
+}
+
+@supports (color: color-mix(in srgb, red 50%, blue)) {
+  .icon-btn:active,
+  .btn-ctrl:active { background: color-mix(in srgb, var(--accent-purple) 18%, transparent); }
+  .track-row.active { background: color-mix(in srgb, var(--accent-purple) 14%, transparent); }
+  .badge { background: color-mix(in srgb, var(--accent-cyan) 16%, transparent); }
+  .chip-primary {
+    background: linear-gradient(135deg,
+      color-mix(in srgb, var(--accent-purple) 46%, #120e30),
+      color-mix(in srgb, var(--accent-cyan) 46%, #0e1634));
+  }
+  #btnPrev, #btnNext { color: color-mix(in srgb, var(--accent-purple) 26%, #fff); }
+  .progress-handle { background: color-mix(in srgb, var(--accent-purple) 30%, #fff); }
+  .btn-play {
+    background:
+      linear-gradient(color-mix(in srgb, var(--accent-purple) 22%, #0d0b24), color-mix(in srgb, var(--accent-cyan) 18%, #0d0b24)) padding-box,
+      linear-gradient(135deg, var(--accent-purple), var(--accent-cyan)) border-box;
+  }
+}
