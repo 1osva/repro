@@ -666,3 +666,26 @@ html.lite *, html.lite *::before, html.lite *::after {
       linear-gradient(135deg, var(--accent-purple), var(--accent-cyan)) border-box;
   }
 }
+
+/* Diagnóstico de audio (Ajustes → Acerca de) */
+.diag { margin-top: 12px; }
+.diag summary { cursor: pointer; font-size: 0.84rem; color: var(--accent-purple); }
+.diag-log {
+  margin-top: 8px;
+  max-height: 260px;
+  overflow: auto;
+  padding: 10px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--line);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  user-select: text;
+  -webkit-user-select: text;
+}
+.diag-actions { display: flex; gap: 8px; margin-top: 8px; }
+

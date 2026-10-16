@@ -4,6 +4,8 @@ import android.content.ActivityNotFoundException;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.media.AudioDeviceInfo;
+import android.media.AudioManager;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.net.Uri;
@@ -12,6 +14,7 @@ import android.os.PowerManager;
 import android.provider.Settings;
 import android.util.Base64;
 
+import com.getcapacitor.JSArray;
 import com.getcapacitor.JSObject;
 import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
@@ -177,6 +180,47 @@ public class MediaControlsPlugin extends Plugin {
             }
         }
         result.put("ignoring", false); // la persona decide en el aviso; se vuelve a consultar después
+        call.resolve(result);
+    }
+
+    // ------------------------------------------------------------------ diagnóstico: salida de audio
+
+    private static String outputName(int type) {
+        switch (type) {
+            case AudioDeviceInfo.TYPE_BUILTIN_SPEAKER: return "Altavoz del teléfono";
+            case AudioDeviceInfo.TYPE_BUILTIN_EARPIECE: return "Auricular de llamadas del teléfono";
+            case AudioDeviceInfo.TYPE_WIRED_HEADPHONES:
+            case AudioDeviceInfo.TYPE_WIRED_HEADSET: return "Audífonos con cable";
+            case AudioDeviceInfo.TYPE_BLUETOOTH_A2DP: return "Bluetooth (A2DP, música)";
+            case AudioDeviceInfo.TYPE_BLUETOOTH_SCO: return "Bluetooth (SCO, llamadas: mala calidad)";
+            case AudioDeviceInfo.TYPE_USB_HEADSET:
+            case AudioDeviceInfo.TYPE_USB_DEVICE:
+            case AudioDeviceInfo.TYPE_USB_ACCESSORY: return "USB";
+            case 26: return "Bluetooth LE (audífonos)";
+            case 27: return "Bluetooth LE (bocina)";
+            case 30: return "Bluetooth LE (difusión)";
+            default: return "Otra salida (tipo " + type + ")";
+        }
+    }
+
+    /** Devuelve { outputs: ["Bluetooth (A2DP, música)", ...] } con las salidas de audio conectadas ahora. */
+    @PluginMethod
+    public void getAudioOutputs(PluginCall call) {
+        JSArray outputs = new JSArray();
+        try {
+            if (Build.VERSION.SDK_INT >= 23) {
+                AudioManager am = (AudioManager) getContext().getSystemService(Context.AUDIO_SERVICE);
+                if (am != null) {
+                    for (AudioDeviceInfo device : am.getDevices(AudioManager.GET_DEVICES_OUTPUTS)) {
+                        outputs.put(outputName(device.getType()));
+                    }
+                }
+            }
+        } catch (Exception e) {
+            // sin datos: solo es diagnóstico
+        }
+        JSObject result = new JSObject();
+        result.put("outputs", outputs);
         call.resolve(result);
     }
 }

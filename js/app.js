@@ -73,7 +73,8 @@ document.addEventListener('DOMContentLoaded', () => {
     toast: $('nocturneToast'),
     app: $('app'), player: $('screenHome'), btnPlayerClose: $('btnPlayerClose'), btnMiniNext: $('btnMiniNext'),
     miniProgressFill: $('miniProgressFill'), btnSettingsBack: $('btnSettingsBack'),
-    aboutBuild: $('aboutBuild'), aboutMusic: $('aboutMusic'), aboutNotif: $('aboutNotif'), aboutCovers: $('aboutCovers'), aboutBackground: $('aboutBackground'),
+    aboutBuild: $('aboutBuild'), aboutMusic: $('aboutMusic'), audioDiagLog: $('audioDiagLog'), btnDiagRefresh: $('btnDiagRefresh'), btnDiagCopy: $('btnDiagCopy'),
+    aboutNotif: $('aboutNotif'), aboutCovers: $('aboutCovers'), aboutBackground: $('aboutBackground'),
     vizEnabledToggle: $('vizEnabledToggle'),
     tabs: document.querySelectorAll('.main-tab'),
     screens: document.querySelectorAll('.screen'),
@@ -351,6 +352,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     saveQueue();
     saveSession(startAt);
+    logTrackDiag(track);
 
     // 2) Texto y estado al instante (es barato)…
     dom.currentTitle.textContent = track.title;
@@ -1662,6 +1664,59 @@ document.addEventListener('DOMContentLoaded', () => {
     NocturneLibrary.requestThumb(track, showThumb);
   }
 
+  // ---------------------------------------------------------------------------
+  // Diagnóstico de audio: ayuda a encontrar la causa de los cortes (formato, bitrate, audífonos…)
+  // ---------------------------------------------------------------------------
+  async function logTrackDiag(track) {
+    try {
+      const ext = (String(track.fileName || '').split('.').pop() || '?').toUpperCase();
+      const mb = track.size ? `${(track.size / 1048576).toFixed(1)} MB` : 'tamaño ?';
+      const kbps = track.size && track.duration > 0 ? `~${Math.round((track.size * 8) / track.duration / 1000)} kbps` : 'kbps ?';
+      const outs = await NocturneMediaControls.audioOutputs();
+      audioEngine.logDiag(`▶ "${track.title}" · ${ext} · ${mb} · ${kbps} · salida: ${outs ? (outs.join(', ') || 'ninguna') : 'desconocida'}`);
+    } catch (e) { /* solo diagnóstico */ }
+  }
+
+  if (navigator.mediaDevices && navigator.mediaDevices.addEventListener) {
+    navigator.mediaDevices.addEventListener('devicechange', async () => {
+      const outs = await NocturneMediaControls.audioOutputs();
+      audioEngine.logDiag(`Cambió la conexión de audio → ${outs ? (outs.join(', ') || 'ninguna') : 'desconocida'}`);
+    });
+  }
+
+  async function buildAudioDiagText() {
+    const ua = navigator.userAgent || '';
+    const android = (ua.match(/Android ([\d.]+); ([^)]+)\)/) || []);
+    const webview = (ua.match(/Chrome\/([\d.]+)/) || [])[1] || '?';
+    const outs = await NocturneMediaControls.audioOutputs();
+    const t = currentTrack();
+    const lines = [
+      `Teléfono: Android ${android[1] || '?'} · ${android[2] || '?'}`,
+      `WebView: Chrome ${webview}`,
+      `Frecuencia del audio: ${audioEngine.ctx ? audioEngine.ctx.sampleRate + ' Hz' : 'sin iniciar'}`,
+      `Salida actual: ${outs ? (outs.join(', ') || 'ninguna') : 'desconocida'}`,
+      `Crossfade: ${audioEngine.crossfadeDuration}s · Fade-in: ${audioEngine.fadeInDuration}s`,
+      t ? `Canción: ${t.title} (${(String(t.fileName || '').split('.').pop() || '?').toUpperCase()})` : 'Canción: ninguna',
+      '— Eventos recientes —'
+    ];
+    return lines.concat(audioEngine.diag.length ? audioEngine.diag : ['(sin eventos todavía)']).join('\n');
+  }
+
+  async function renderAudioDiag() {
+    dom.audioDiagLog.textContent = await buildAudioDiagText();
+  }
+  dom.btnDiagRefresh.addEventListener('click', renderAudioDiag);
+  dom.btnDiagCopy.addEventListener('click', async () => {
+    const text = await buildAudioDiagText();
+    dom.audioDiagLog.textContent = text;
+    try {
+      await navigator.clipboard.writeText(text);
+      showToast('Diagnóstico copiado.');
+    } catch (e) {
+      showToast('No se pudo copiar: mantén pulsado el texto para copiarlo.');
+    }
+  });
+
   // Permiso de fotos (portadas): se pide una sola vez, justo después de traer la música.
   // Las portadas se intentan cargar de todos modos; el permiso solo ayuda en algunos teléfonos.
   const IMAGES_ASKED_KEY = 'nocturne.imagesPermissionAsked';
@@ -1830,6 +1885,7 @@ document.addEventListener('DOMContentLoaded', () => {
     } else {
       dom.aboutMusic.textContent = 'Música del teléfono: solo disponible en la app Android';
     }
+    renderAudioDiag();
   }
 
   // ---------------------------------------------------------------------------
