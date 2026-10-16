@@ -50,6 +50,20 @@ class AudioEngine {
 
     this.volume = 0.8;
     this._initialized = false;
+
+    // Diagnóstico: últimos eventos de audio (cortes, suspensiones, tirones). Solo informativo.
+    this.diag = [];
+    this._lastAppPauseAt = 0;
+  }
+
+  /** Anota un evento de diagnóstico (se conservan los últimos 60). */
+  logDiag(message) {
+    const t = new Date();
+    const hh = String(t.getHours()).padStart(2, '0');
+    const mm = String(t.getMinutes()).padStart(2, '0');
+    const ss = String(t.getSeconds()).padStart(2, '0');
+    this.diag.push(`${hh}:${mm}:${ss}  ${message}`);
+    if (this.diag.length > 60) this.diag.shift();
   }
 
   /**
@@ -71,6 +85,54 @@ class AudioEngine {
     } catch (e) {
       this.ctx = new AudioContextClass();
     }
+
+    this.logDiag(`Audio iniciado: ${this.ctx.sampleRate} Hz, estado ${this.ctx.state}`);
+    // Si el sistema suspende el audio (cambio de audífonos, otra app…) mientras debería sonar, se reanuda
+    this.ctx.addEventListener('statechange', () => {
+      if (!this.ctx) return;
+      this.logDiag(`El audio del sistema pasó a: ${this.ctx.state}`);
+      if (this.ctx.state === 'closed') return;
+      const active = this.getActivePlayer();
+      if (this.ctx.state !== 'running' && active && active.audio && !active.audio.paused && !this.synthActive) {
+        try {
+          this.ctx.resume();
+          this.logDiag('Se intentó reanudar el audio automáticamente');
+        } catch (e) { /* sin acción */ }
+      }
+    });
+
+    // Diagnóstico de ciclo de vida: permite distinguir un corte por suspensión de WebAudio,
+    // pausa del elemento multimedia, pérdida de foco o bloqueo de la interfaz.
+    if (!this._lifecycleDiagInstalled) {
+      this._lifecycleDiagInstalled = true;
+      const logLifecycle = (label) => {
+        const active = this.getActivePlayer();
+        const a = active && active.audio;
+        const ctxState = this.ctx ? this.ctx.state : 'sin contexto';
+        const mediaState = !a ? 'sin reproductor'
+          : (a.paused ? 'pausado' : 'reproduciendo') +
+            `, readyState=${a.readyState}, networkState=${a.networkState}` +
+            (Number.isFinite(a.currentTime) ? `, t=${a.currentTime.toFixed(1)}s` : '');
+        this.logDiag(`${label} | documento=${document.visibilityState}, AudioContext=${ctxState}, ${mediaState}`);
+      };
+      document.addEventListener('visibilitychange', () => logLifecycle('Visibilidad de la app'));
+      window.addEventListener('pagehide', () => logLifecycle('pagehide: la página se oculta/descarta'));
+      window.addEventListener('pageshow', () => logLifecycle('pageshow: la página vuelve'));
+      window.addEventListener('blur', () => logLifecycle('La ventana perdió foco'));
+      window.addEventListener('focus', () => logLifecycle('La ventana recuperó foco'));
+    }
+
+    // Tirones de la interfaz (si pasan mientras suena música, pueden causar cortes)
+    try {
+      if (window.PerformanceObserver && !this._longTaskObserver) {
+        this._longTaskObserver = new PerformanceObserver((list) => {
+          const p = this.getActivePlayer();
+          if (!p || !p.audio || p.audio.paused) return;
+          list.getEntries().forEach((e) => { if (e.duration >= 120) this.logDiag(`Tirón de la interfaz: ${Math.round(e.duration)} ms`); });
+        });
+        this._longTaskObserver.observe({ entryTypes: ['longtask'] });
+      }
+    } catch (e) { /* el sistema no lo permite */ }
 
     // Analizador de frecuencias
     this.analyser = this.ctx.createAnalyser();
@@ -121,7 +183,40 @@ class AudioEngine {
         }
       });
 
+      p.audio.addEventListener('play', () => {
+        if (this.activePlayerIndex === idx) this.logDiag(`Elemento de audio recibió play (t=${p.audio.currentTime.toFixed(1)}s)`);
+      });
+      p.audio.addEventListener('playing', () => {
+        if (this.activePlayerIndex === idx) this.logDiag(`El elemento de audio está sonando (t=${p.audio.currentTime.toFixed(1)}s)`);
+      });
+      p.audio.addEventListener('waiting', () => {
+        if (this.activePlayerIndex === idx) this.logDiag(`Buffer insuficiente (waiting; readyState=${p.audio.readyState}, t=${p.audio.currentTime.toFixed(1)}s)`);
+      });
+      p.audio.addEventListener('stalled', () => {
+        if (this.activePlayerIndex === idx) this.logDiag(`La fuente dejó de entregar datos (stalled; networkState=${p.audio.networkState}, t=${p.audio.currentTime.toFixed(1)}s)`);
+      });
+      p.audio.addEventListener('suspend', () => {
+        if (this.activePlayerIndex === idx && !p.audio.paused) this.logDiag(`El navegador suspendió la carga de datos (suspend; t=${p.audio.currentTime.toFixed(1)}s)`);
+      });
+      p.audio.addEventListener('abort', () => {
+        if (this.activePlayerIndex === idx) this.logDiag(`Carga de audio abortada (t=${p.audio.currentTime.toFixed(1)}s)`);
+      });
+      p.audio.addEventListener('emptied', () => {
+        if (this.activePlayerIndex === idx) this.logDiag('La fuente de audio quedó vacía (emptied)');
+      });
+      p.audio.addEventListener('pause', () => {
+        // Una pausa que no vino de la app (Date.now() lejos de la última pausa propia) la causó el sistema
+        if (this.activePlayerIndex === idx && !this.isCrossfading && !p.audio.ended && Date.now() - this._lastAppPauseAt > 1500) {
+          const cause = document.visibilityState === 'hidden'
+            ? 'La pausa ocurrió con la app en segundo plano; posible restricción del sistema/Android'
+            : 'Pausa externa mientras la app estaba visible; posible control multimedia/interrupción';
+          this.logDiag(`${cause} (t=${p.audio.currentTime.toFixed(1)}s, readyState=${p.audio.readyState})`);
+        }
+      });
+
       p.audio.addEventListener('error', (e) => {
+        const code = p.audio.error ? p.audio.error.code : '?';
+        this.logDiag(`Error del archivo de audio (código ${code})`);
         console.warn(`Error en elemento de audio ${idx}:`, e);
       });
     });
@@ -373,11 +468,14 @@ class AudioEngine {
       p.gain.gain.cancelScheduledValues(now);
       p.gain.gain.setValueAtTime(p.gain.gain.value || 1.0, now);
       p.gain.gain.linearRampToValueAtTime(0.0001, now + 0.12);
+      this._lastAppPauseAt = Date.now();
       this.pauseTimeout = setTimeout(() => {
+        this._lastAppPauseAt = Date.now();
         p.audio.pause();
         this.pauseTimeout = null;
       }, 130);
     } else if (p.audio) {
+      this._lastAppPauseAt = Date.now();
       p.audio.pause();
     }
   }
@@ -400,6 +498,7 @@ class AudioEngine {
       p.gain.gain.cancelScheduledValues(now);
       p.gain.gain.setValueAtTime(0.0001, now);
       p.audio.play().then(() => {
+        this.logDiag('Reproducción reanudada correctamente');
         const resumeNow = this.ctx.currentTime;
         const rampDuration = Math.min(1.0, Math.max(0.2, this.fadeInDuration * 0.5));
         p.gain.gain.linearRampToValueAtTime(1.0, resumeNow + rampDuration);

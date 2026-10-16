@@ -1,6 +1,6 @@
 // Instala los módulos nativos de Nocturne en el proyecto Android que genera
 // `npx cap add android`:
-//   - MediaLibrary: lee la música del teléfono (permiso de música).
+//   - MediaLibrary: lee la música del teléfono (permiso de música) y sus portadas (permiso de fotos).
 //   - MediaControls + MediaNotificationService: notificación de música y reproducción en
 //     segundo plano (servicio en primer plano + MediaSession).
 // Se ejecuta solo, mediante el hook "capacitor:update:after" de package.json.
@@ -45,11 +45,13 @@ for (const file of fs.readdirSync(iconsSrc)) {
 let manifest = fs.readFileSync(manifestPath, 'utf8');
 const permissions = [
   '<uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />',
+  '<uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />',
   '<uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />',
   '<uses-permission android:name="android.permission.FOREGROUND_SERVICE" />',
   '<uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />',
   '<uses-permission android:name="android.permission.POST_NOTIFICATIONS" />',
-  '<uses-permission android:name="android.permission.WAKE_LOCK" />'
+  '<uses-permission android:name="android.permission.WAKE_LOCK" />',
+  '<uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />'
 ];
 const anchor = '<uses-permission android:name="android.permission.INTERNET" />';
 if (!manifest.includes(anchor)) fail('no encontré el permiso INTERNET en AndroidManifest.xml para anclar los nuevos');

@@ -64,14 +64,7 @@
               Buscar música
             </button>
           </div>
-          <label class="chip" for="fileInput" id="dropZone">
-            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-            Agregar archivos
-            <input type="file" id="fileInput" multiple accept="audio/*" style="display:none;">
-          </label>
-          <button class="chip" id="btnShuffleNow" type="button">Smart Shuffle</button>
-          <button class="chip" id="btnLoadDemos" type="button">Demos</button>
-          <button class="chip chip-danger" id="btnClearQueue" type="button">Vaciar</button>
+          <input type="file" id="fileInput" multiple accept="audio/*" hidden>
         </div>
 
         <div class="track-list" id="queueList"></div>
@@ -193,6 +186,16 @@
           <p class="about-line" id="aboutBuild">Versión de desarrollo</p>
           <p class="about-line" id="aboutMusic">Música del teléfono: …</p>
           <p class="about-line" id="aboutNotif">Notificación de reproducción: …</p>
+          <p class="about-line" id="aboutCovers">Portadas: …</p>
+          <p class="about-line" id="aboutBackground">Segundo plano: …</p>
+          <details class="diag" id="audioDiag">
+            <summary>Diagnóstico de audio (para los cortes)</summary>
+            <pre class="diag-log" id="audioDiagLog">…</pre>
+            <div class="diag-actions">
+              <button class="chip" id="btnDiagRefresh" type="button">Actualizar</button>
+              <button class="chip" id="btnDiagCopy" type="button">Copiar</button>
+            </div>
+          </details>
           <p class="about-line">Funciona sin internet.</p>
         </div>
       </section>
