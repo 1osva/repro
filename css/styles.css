@@ -689,3 +689,9 @@ html.lite *, html.lite *::before, html.lite *::after {
 }
 .diag-actions { display: flex; gap: 8px; margin-top: 8px; }
 
+/* Barra de tiempo táctil (tocar o deslizar) */
+.progress-track { touch-action: none; }
+.progress-track::before { inset: -22px 0; }
+.progress-handle { transition: width 0.12s ease, height 0.12s ease; }
+.progress-track.scrubbing .progress-handle { width: 24px; height: 24px; }
+

@@ -231,9 +231,29 @@ const NocturneLibrary = (() => {
     }
   }
 
+
+  /** ¿Este APK sabe eliminar canciones del teléfono? */
+  function canDelete() {
+    const plugin = getPlugin();
+    return !!(plugin && typeof plugin.deleteTracks === 'function');
+  }
+
+  /**
+   * Elimina canciones del teléfono. Android muestra su propio aviso de confirmación.
+   * Devuelve { deleted: [uri…], cancelled } con lo que realmente se borró.
+   */
+  async function deleteTracks(tracks) {
+    const plugin = getPlugin();
+    if (!plugin || typeof plugin.deleteTracks !== 'function') throw new Error('Este APK no incluye la función de eliminar.');
+    const uris = tracks.map(t => t.contentUri).filter(Boolean);
+    const result = await plugin.deleteTracks({ uris });
+    return { deleted: (result && result.deleted) || [], cancelled: !!(result && result.cancelled) };
+  }
+
   return {
     isAvailable, status, hasPermission, scan, openSettings, needsResolve, resolve, release,
-    thumbsSupported, needsThumb, requestThumb, hasImagesPermission, ensureImagesPermission
+    thumbsSupported, needsThumb, requestThumb, hasImagesPermission, ensureImagesPermission,
+    canDelete, deleteTracks
   };
 })();
 

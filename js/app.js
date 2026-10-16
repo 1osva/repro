@@ -33,6 +33,7 @@ document.addEventListener('DOMContentLoaded', () => {
   let mediaDurationFor = null; // canción cuya duración ya se envió a la notificación
   let restorePending = null; // { pos } canción recordada de la última vez, lista para reanudar con Play
   let sessionRestored = false;
+  let scrubbing = false; // la persona está deslizando la barra de tiempo
   const SESSION_KEY = 'nocturne.session.v1'; // última canción y segundo en que se quedó
   const QUEUE_KEY = 'nocturne.queue.v1';     // orden de la cola (para conservar el modo aleatorio)
 
@@ -1065,7 +1066,97 @@ document.addEventListener('DOMContentLoaded', () => {
         p.textContent = 'Solo las canciones de la biblioteca del teléfono se pueden guardar en listas.';
         body.appendChild(p);
       }
+
+      if (track.contentUri && NocturneLibrary.canDelete()) {
+        sheetItem(body, {
+          icon: ICON.trash, label: 'Eliminar del teléfono…', danger: true,
+          onClick: () => confirmDeleteTrack(track)
+        });
+      }
     });
+  }
+
+  // ----- Eliminar canciones del teléfono -----
+  function confirmDeleteTrack(track) {
+    confirmSheet(
+      `¿Eliminar «${track.title}»?`,
+      'Se borrará el archivo de tu teléfono y no se puede deshacer. Android te pedirá confirmar.',
+      'Eliminar',
+      () => deleteTracksFromPhone([track])
+    );
+  }
+
+  async function deleteTracksFromPhone(tracks) {
+    try {
+      const { deleted, cancelled } = await NocturneLibrary.deleteTracks(tracks);
+      if (cancelled) { showToast('No se eliminó nada.'); return; }
+      const gone = tracks.filter(t => deleted.includes(t.contentUri));
+      if (!gone.length) { showToast('No se pudo eliminar la canción.'); return; }
+      removeTracksFromApp(gone);
+      showToast(gone.length === 1 ? 'Canción eliminada.' : `${gone.length} canciones eliminadas.`);
+    } catch (e) {
+      console.warn('No se pudo eliminar:', e);
+      const msg = (e && e.message) || '';
+      if (e && e.code === 'UNSUPPORTED') showToast('Para eliminar desde la app se necesita Android 10 o superior.');
+      else if (e && e.code === 'PERMISSION_DENIED') showToast('Falta el permiso de música para eliminar.');
+      else showToast(/curso/i.test(msg) ? 'Espera: ya hay una eliminación en curso.' : 'No se pudo eliminar la canción.');
+    }
+  }
+
+  /** Quita de la app (biblioteca, cola, listas y memoria del reproductor) canciones que ya no existen en el teléfono. */
+  function removeTracksFromApp(gone) {
+    const goneUris = new Set(gone.map(t => t.contentUri));
+    const isGone = (t) => !!(t && t.contentUri && goneUris.has(t.contentUri));
+    const cur = currentTrack();
+    const removingCurrent = isGone(cur);
+    const wasPlaying = isPlaying;
+
+    // Si se borra la que suena, se sigue con la siguiente de la cola que no se haya borrado
+    const follow = removingCurrent ? (playlist.slice(currentTrackIndex + 1).find(t => !isGone(t)) || null) : null;
+
+    library = library.filter(t => !isGone(t));
+    playlist = playlist.filter(t => !isGone(t));
+    currentTrackIndex = removingCurrent ? -1 : (cur ? playlist.indexOf(cur) : -1);
+
+    if (removingCurrent) {
+      restorePending = null;
+      audioEngine.stopAllAudio();
+      NocturneMediaControls.stop();
+      setPlayingState(false);
+      visualizer.setCover(null);
+      dom.currentCover.style.backgroundImage = 'none';
+      dom.currentCover.innerHTML = DEFAULT_COVER_HTML;
+      dom.barCover.style.backgroundImage = 'none';
+      dom.barCover.innerHTML = DEFAULT_BAR_COVER_HTML;
+      dom.progressFill.style.width = '0%';
+      dom.progressHandle.style.left = '0%';
+      dom.miniProgressFill.style.width = '0%';
+      dom.currentTime.textContent = formatTime(0);
+      dom.durationTime.textContent = formatTime(0);
+    }
+    gone.forEach(t => NocturneLibrary.release(t));
+
+    // Fuera de Favoritas y de las demás listas
+    NocturneLists.all().forEach(l => gone.forEach(t => NocturneLists.removeTrack(l.id, t)));
+
+    // La memoria del reproductor no debe apuntar a una canción borrada
+    const saved = readJson(SESSION_KEY);
+    if (saved && gone.some(t => String(t.id) === String(saved.id))) {
+      try { localStorage.removeItem(SESSION_KEY); } catch (e) { /* sin almacenamiento */ }
+    }
+    if (playlist.length) saveQueue();
+
+    renderLibrary();
+    renderListCards();
+    if (currentListId) renderListDetail();
+    markActiveRows();
+    updateFavoriteButton(currentTrack());
+    showIdleInfo();
+
+    if (removingCurrent && wasPlaying && follow) {
+      const idx = playlist.indexOf(follow);
+      if (idx >= 0) playTrackAtIndex(idx, true);
+    }
   }
 
   function openListChooser(track) {
@@ -1252,13 +1343,15 @@ document.addEventListener('DOMContentLoaded', () => {
   // Audio: progreso, crossfade y eventos del motor
   // ---------------------------------------------------------------------------
   audioEngine.onTimeUpdate = (current, duration) => {
-    dom.currentTime.textContent = formatTime(current);
+    if (!scrubbing) dom.currentTime.textContent = formatTime(current);
     dom.durationTime.textContent = formatTime(duration);
 
     if (duration > 0) {
       const pct = (current / duration) * 100;
-      dom.progressFill.style.width = `${pct}%`;
-      dom.progressHandle.style.left = `${pct}%`;
+      if (!scrubbing) {
+        dom.progressFill.style.width = `${pct}%`;
+        dom.progressHandle.style.left = `${pct}%`;
+      }
       dom.miniProgressFill.style.width = `${pct}%`;
       saveSessionSoon();
 
@@ -1342,15 +1435,75 @@ document.addEventListener('DOMContentLoaded', () => {
   dom.btnNext.addEventListener('click', () => nextTrack(false));
   dom.btnPrev.addEventListener('click', prevTrack);
 
-  dom.progressTrack.addEventListener('click', (e) => {
-    const rect = dom.progressTrack.getBoundingClientRect();
-    const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-    const activePlayer = audioEngine.getActivePlayer();
-    if (activePlayer.audio && activePlayer.audio.duration) {
-      audioEngine.seek(pct * activePlayer.audio.duration);
-      syncMedia();
-    }
-  });
+  // Barra de tiempo táctil: se puede tocar o deslizar el dedo hasta el punto que se quiere.
+  // Mientras se desliza solo se mueve la barra; la canción salta al soltar (así no se corta el audio).
+  (function bindScrub() {
+    const bar = dom.progressTrack;
+    let activeId = null;
+    let lastPct = 0;
+
+    const totalSeconds = () => {
+      const t = currentTrack();
+      if (restorePending && t) return t.duration || 0; // canción recordada, aún sin cargar
+      const a = audioEngine.getActivePlayer().audio;
+      return a && isFinite(a.duration) ? a.duration : 0;
+    };
+    const pctAt = (e) => {
+      const r = bar.getBoundingClientRect();
+      return r.width ? clamp((e.clientX - r.left) / r.width, 0, 1) : 0;
+    };
+    const preview = (pct) => {
+      lastPct = pct;
+      dom.progressFill.style.width = `${pct * 100}%`;
+      dom.progressHandle.style.left = `${pct * 100}%`;
+      dom.currentTime.textContent = formatTime(pct * totalSeconds());
+    };
+    const resyncFromPlayer = () => {
+      const a = audioEngine.getActivePlayer().audio;
+      if (a && isFinite(a.duration) && a.duration > 0) {
+        const pct = (a.currentTime / a.duration) * 100;
+        dom.progressFill.style.width = `${pct}%`;
+        dom.progressHandle.style.left = `${pct}%`;
+        dom.currentTime.textContent = formatTime(a.currentTime);
+      }
+    };
+
+    bar.addEventListener('pointerdown', (e) => {
+      if (activeId !== null || (e.pointerType === 'mouse' && e.button !== 0)) return;
+      if (!(totalSeconds() > 0)) return;
+      activeId = e.pointerId;
+      scrubbing = true;
+      try { bar.setPointerCapture(e.pointerId); } catch (err) { /* sin captura */ }
+      bar.classList.add('scrubbing');
+      preview(pctAt(e));
+      e.preventDefault();
+    });
+    bar.addEventListener('pointermove', (e) => {
+      if (e.pointerId === activeId) preview(pctAt(e));
+    });
+
+    const finish = (e, commit) => {
+      if (e.pointerId !== activeId) return;
+      activeId = null;
+      scrubbing = false;
+      bar.classList.remove('scrubbing');
+      try { bar.releasePointerCapture(e.pointerId); } catch (err) { /* ya liberado */ }
+      const total = totalSeconds();
+      if (!commit || !(total > 0)) { resyncFromPlayer(); return; }
+      const target = lastPct * total;
+      const t = currentTrack();
+      if (restorePending && t) {
+        // Canción recordada sin cargar: Play empezará desde el punto elegido
+        restorePending.pos = target;
+        if (t.contentUri) storageSet(SESSION_KEY, JSON.stringify({ id: t.id, pos: Math.round(target * 10) / 10, src: queueSource }));
+      } else {
+        audioEngine.seek(target);
+        syncMedia();
+      }
+    };
+    bar.addEventListener('pointerup', (e) => finish(e, true));
+    bar.addEventListener('pointercancel', (e) => finish(e, false));
+  })();
 
   dom.crossfadeSlider.addEventListener('input', (e) => {
     const val = parseFloat(e.target.value);

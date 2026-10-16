@@ -5,6 +5,10 @@ import android.content.ContentUris;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.app.PendingIntent;
+import android.app.RecoverableSecurityException;
+import android.content.ContentResolver;
+import android.content.IntentSender;
 import android.database.Cursor;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
@@ -17,6 +21,11 @@ import android.util.Base64;
 import android.util.Size;
 
 import com.getcapacitor.JSArray;
+import androidx.activity.result.ActivityResultLauncher;
+import androidx.activity.result.IntentSenderRequest;
+import androidx.activity.result.contract.ActivityResultContracts;
+
+import com.getcapacitor.JSArray;
 import com.getcapacitor.JSObject;
 import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
@@ -25,7 +34,11 @@ import com.getcapacitor.annotation.CapacitorPlugin;
 import com.getcapacitor.annotation.Permission;
 import com.getcapacitor.annotation.PermissionCallback;
 
+import org.json.JSONException;
+
 import java.io.ByteArrayOutputStream;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -39,7 +52,8 @@ import java.util.concurrent.Executors;
  *   anteriores ya lo cubre READ_EXTERNAL_STORAGE.
  *
  * Desde JavaScript: Capacitor.Plugins.MediaLibrary.hasPermission(), .scan(),
- *   .hasImagesPermission(), .requestImagesPermission() y .getThumbnail({ uri, size })
+ *   .hasImagesPermission(), .requestImagesPermission(), .getThumbnail({ uri, size })
+ *   y .deleteTracks({ uris }) (borra del teléfono, con la confirmación del propio Android)
  */
 @CapacitorPlugin(
     name = "MediaLibrary",
@@ -57,6 +71,21 @@ public class MediaLibraryPlugin extends Plugin {
 
     // Las portadas se leen en segundo plano, de dos en dos, para no estorbar al audio ni a la interfaz
     private final ExecutorService thumbPool = Executors.newFixedThreadPool(2);
+
+    // Eliminación de canciones (el sistema muestra su propio aviso de confirmación)
+    private ActivityResultLauncher<IntentSenderRequest> deleteLauncher;
+    private PluginCall pendingDeleteCall;
+    private final List<Uri> pendingUris = new ArrayList<>();
+    private final List<String> deletedUris = new ArrayList<>();
+    private boolean deleteViaRequest = false; // true en Android 11 o superior (un solo aviso para todas)
+
+    @Override
+    public void load() {
+        deleteLauncher = getBridge().registerForActivityResult(
+            new ActivityResultContracts.StartIntentSenderForResult(),
+            result -> onDeleteResult(result.getResultCode())
+        );
+    }
 
     private boolean usesModernPermission() {
         return Build.VERSION.SDK_INT >= 33;
@@ -319,6 +348,134 @@ public class MediaLibraryPlugin extends Plugin {
         BitmapFactory.Options opts = new BitmapFactory.Options();
         opts.inSampleSize = sample;
         return BitmapFactory.decodeByteArray(data, 0, data.length, opts);
+    }
+
+
+    // ------------------------------------------------------------------ eliminar canciones
+
+    /**
+     * Borra canciones del teléfono. Android pide confirmación a la persona con su propio aviso.
+     * Devuelve { deleted: [uri, ...], cancelled: boolean }.
+     */
+    @PluginMethod
+    public void deleteTracks(PluginCall call) {
+        if (pendingDeleteCall != null) {
+            call.reject("Ya hay una eliminación en curso");
+            return;
+        }
+        if (!hasAccess()) {
+            call.reject("Permiso de música denegado", "PERMISSION_DENIED");
+            return;
+        }
+        if (Build.VERSION.SDK_INT < 29) {
+            call.reject("Eliminar desde la app requiere Android 10 o superior", "UNSUPPORTED");
+            return;
+        }
+        JSArray array = call.getArray("uris");
+        if (array == null || array.length() == 0) {
+            call.reject("Faltan las canciones a eliminar");
+            return;
+        }
+
+        pendingUris.clear();
+        deletedUris.clear();
+        try {
+            for (int i = 0; i < array.length(); i++) {
+                String text = array.getString(i);
+                // Solo se aceptan canciones del índice de medios de Android
+                if (text != null && text.startsWith("content://media/")) pendingUris.add(Uri.parse(text));
+            }
+        } catch (JSONException e) {
+            call.reject("Lista de canciones no válida");
+            return;
+        }
+        if (pendingUris.isEmpty()) {
+            call.reject("Ninguna canción válida para eliminar");
+            return;
+        }
+
+        pendingDeleteCall = call;
+        if (Build.VERSION.SDK_INT >= 30) {
+            deleteViaRequest = true;
+            try {
+                PendingIntent request = MediaStore.createDeleteRequest(getContext().getContentResolver(), pendingUris);
+                deleteLauncher.launch(new IntentSenderRequest.Builder(request.getIntentSender()).build());
+            } catch (Exception e) {
+                finishDelete(false, "No se pudo pedir la confirmación: " + e.getMessage());
+            }
+        } else {
+            deleteViaRequest = false;
+            deleteOneByOne();
+        }
+    }
+
+    /** Android 10: se borra de una en una; si el sistema pide permiso para una canción, se muestra su aviso. */
+    private void deleteOneByOne() {
+        ContentResolver resolver = getContext().getContentResolver();
+        while (!pendingUris.isEmpty()) {
+            Uri uri = pendingUris.get(0);
+            try {
+                if (resolver.delete(uri, null, null) > 0) deletedUris.add(uri.toString());
+                pendingUris.remove(0);
+            } catch (SecurityException e) {
+                IntentSender sender = Api29.userActionSender(e);
+                if (sender == null) {
+                    pendingUris.remove(0); // sin permiso para esta canción: se omite
+                    continue;
+                }
+                try {
+                    deleteLauncher.launch(new IntentSenderRequest.Builder(sender).build());
+                } catch (Exception launchError) {
+                    finishDelete(false, "No se pudo pedir la confirmación: " + launchError.getMessage());
+                }
+                return; // se continúa en onDeleteResult cuando la persona responde
+            }
+        }
+        finishDelete(false, null);
+    }
+
+    private void onDeleteResult(int resultCode) {
+        if (pendingDeleteCall == null) return;
+        boolean accepted = resultCode == android.app.Activity.RESULT_OK;
+        if (deleteViaRequest) {
+            if (accepted) {
+                for (Uri uri : pendingUris) deletedUris.add(uri.toString());
+            }
+            pendingUris.clear();
+            finishDelete(!accepted, null);
+        } else if (accepted) {
+            deleteOneByOne(); // ya hay permiso para esa canción: se reintenta
+        } else {
+            pendingUris.clear();
+            finishDelete(true, null);
+        }
+    }
+
+    private void finishDelete(boolean cancelled, String error) {
+        PluginCall call = pendingDeleteCall;
+        pendingDeleteCall = null;
+        pendingUris.clear();
+        if (call == null) return;
+        if (error != null) {
+            call.reject(error);
+            return;
+        }
+        JSArray deleted = new JSArray();
+        for (String uri : deletedUris) deleted.put(uri);
+        JSObject result = new JSObject();
+        result.put("deleted", deleted);
+        result.put("cancelled", cancelled && deletedUris.isEmpty());
+        call.resolve(result);
+    }
+
+    /** Código exclusivo de Android 10 en una clase aparte para que Android 9 o menor no tenga problemas al cargarlo. */
+    private static final class Api29 {
+        static IntentSender userActionSender(SecurityException e) {
+            if (e instanceof RecoverableSecurityException) {
+                return ((RecoverableSecurityException) e).getUserAction().getActionIntent().getIntentSender();
+            }
+            return null;
+        }
     }
 
     /** MediaStore usa "<unknown>" cuando falta una etiqueta; lo tratamos como vacío. */
