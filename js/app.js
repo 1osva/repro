@@ -1858,6 +1858,32 @@ document.addEventListener('DOMContentLoaded', () => {
   async function renderAudioDiag() {
     dom.audioDiagLog.textContent = await buildAudioDiagText();
   }
+
+  // Captura el contexto justo antes/después de las interacciones que pueden coincidir con un corte.
+  let lastInteractionDiag = { key: '', at: 0 };
+  document.addEventListener('pointerup', (event) => {
+    const target = event.target && event.target.closest
+      ? event.target.closest('button, input, select, [role="button"], .queue-item, .mini-player, .progress-track')
+      : null;
+    if (!target) return;
+    const key = target.id || target.getAttribute('aria-label') || target.className?.toString().split(' ')[0] || target.tagName;
+    const now = Date.now();
+    if (key === lastInteractionDiag.key && now - lastInteractionDiag.at < 700) return;
+    lastInteractionDiag = { key, at: now };
+    const p = audioEngine.getActivePlayer();
+    const audio = p && p.audio;
+    audioEngine.logDiag(`Interacción: ${String(key).slice(0, 45)} · hidden=${document.hidden} · AudioContext=${audioEngine.ctx ? audioEngine.ctx.state : 'sin iniciar'} · paused=${audio ? audio.paused : '?'} · readyState=${audio ? audio.readyState : '?'} · t=${audio && Number.isFinite(audio.currentTime) ? audio.currentTime.toFixed(1) : '?'}s`);
+  }, true);
+
+  document.addEventListener('visibilitychange', () => {
+    const p = audioEngine.getActivePlayer();
+    const audio = p && p.audio;
+    audioEngine.logDiag(`Visibilidad de la app | documento=${document.hidden ? 'hidden' : 'visible'}, AudioContext=${audioEngine.ctx ? audioEngine.ctx.state : 'sin iniciar'}, ${audio && !audio.paused ? 'reproduciendo' : 'pausado'}, readyState=${audio ? audio.readyState : '?'}, networkState=${audio ? audio.networkState : '?'}, t=${audio && Number.isFinite(audio.currentTime) ? audio.currentTime.toFixed(1) : '?'}s`);
+    if (!document.hidden && audio && !audio.paused && audioEngine.ctx && audioEngine.ctx.state === 'suspended') {
+      audioEngine.ctx.resume().then(() => audioEngine.logDiag('Al volver a la app se reanudó AudioContext')).catch((e) => audioEngine.logDiag(`No se pudo reanudar AudioContext: ${e.name || 'error'}`));
+    }
+  });
+
   dom.btnDiagRefresh.addEventListener('click', renderAudioDiag);
   dom.btnDiagCopy.addEventListener('click', async () => {
     const text = await buildAudioDiagText();
