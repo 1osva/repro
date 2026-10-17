@@ -34,6 +34,11 @@ document.addEventListener('DOMContentLoaded', () => {
   let restorePending = null; // { pos } canción recordada de la última vez, lista para reanudar con Play
   let sessionRestored = false;
   let scrubbing = false; // la persona está deslizando la barra de tiempo
+  // Selección de varias canciones (se activa manteniendo presionada una)
+  let selecting = false;
+  let selectionContainer = null; // lista donde se empezó a seleccionar
+  let suppressClick = false;     // evita que soltar la pulsación larga reproduzca la canción
+  const selectedMap = new Map(); // id → canción
   const SESSION_KEY = 'nocturne.session.v1'; // última canción y segundo en que se quedó
   const QUEUE_KEY = 'nocturne.queue.v1';     // orden de la cola (para conservar el modo aleatorio)
 
@@ -74,7 +79,9 @@ document.addEventListener('DOMContentLoaded', () => {
     toast: $('nocturneToast'),
     app: $('app'), player: $('screenHome'), btnPlayerClose: $('btnPlayerClose'), btnMiniNext: $('btnMiniNext'),
     miniProgressFill: $('miniProgressFill'), btnSettingsBack: $('btnSettingsBack'),
-    aboutBuild: $('aboutBuild'), aboutMusic: $('aboutMusic'), audioDiagLog: $('audioDiagLog'), btnDiagRefresh: $('btnDiagRefresh'), btnDiagCopy: $('btnDiagCopy'),
+    aboutBuild: $('aboutBuild'), aboutMusic: $('aboutMusic'), selectBar: $('selectBar'), selCount: $('selCount'), btnSelCancel: $('btnSelCancel'), btnSelAll: $('btnSelAll'),
+    btnSelShare: $('btnSelShare'), btnSelFav: $('btnSelFav'), btnSelDelete: $('btnSelDelete'),
+    audioDiagLog: $('audioDiagLog'), btnDiagRefresh: $('btnDiagRefresh'), btnDiagCopy: $('btnDiagCopy'),
     aboutNotif: $('aboutNotif'), aboutCovers: $('aboutCovers'), aboutBackground: $('aboutBackground'),
     vizEnabledToggle: $('vizEnabledToggle'),
     tabs: document.querySelectorAll('.main-tab'),
@@ -684,11 +691,13 @@ document.addEventListener('DOMContentLoaded', () => {
   // ---------------------------------------------------------------------------
   // Listas de canciones (biblioteca y detalle de lista)
   // ---------------------------------------------------------------------------
+  const CHECK_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>';
+
   function rowHtml(t, idx) {
     const img = t.cover || t.thumb;
     const cover = img ? ` style="background-image:url('${escapeHtml(img)}')"` : '';
     return `
-      <div class="track-row" data-index="${idx}" data-id="${escapeHtml(t.id)}">
+      <div class="track-row${selectedMap.has(t.id) ? ' selected' : ''}" data-index="${idx}" data-id="${escapeHtml(t.id)}">
         <div class="track-row-cover"${cover}>${img ? '' : '♪'}</div>
         <div class="track-row-info">
           <div class="track-row-title">${escapeHtml(t.title)}</div>
@@ -696,6 +705,7 @@ document.addEventListener('DOMContentLoaded', () => {
         </div>
         <div class="track-row-dur">${t.duration ? formatTime(t.duration) : ''}</div>
         <button class="icon-btn row-menu" type="button" aria-label="Más opciones">${ICON.dots}</button>
+        <span class="sel-circle" aria-hidden="true">${CHECK_SVG}</span>
       </div>`;
   }
 
@@ -730,13 +740,54 @@ document.addEventListener('DOMContentLoaded', () => {
     observeCovers(container);
   }
 
+  function trackOfRow(container, row) {
+    const tracks = container._tracks || [];
+    return tracks[parseInt(row.dataset.index, 10)] || null;
+  }
+
   function bindTrackList(container, getSource) {
+    // Mantener presionada una canción: empieza la selección de varias
+    let pressTimer = null;
+    let pressX = 0;
+    let pressY = 0;
+    const cancelPress = () => { if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; } };
+
+    container.addEventListener('pointerdown', (e) => {
+      if (selecting || (e.pointerType === 'mouse' && e.button !== 0)) return;
+      const row = e.target.closest('.track-row');
+      if (!row || !container.contains(row) || e.target.closest('.row-menu')) return;
+      pressX = e.clientX;
+      pressY = e.clientY;
+      cancelPress();
+      pressTimer = setTimeout(() => {
+        pressTimer = null;
+        const t = trackOfRow(container, row);
+        if (!t) return;
+        suppressClick = true; // al soltar el dedo llega un "click": se ignora
+        selectionContainer = container;
+        enterSelection();
+        toggleSelect(t);
+        if (navigator.vibrate) { try { navigator.vibrate(14); } catch (err) { /* sin vibración */ } }
+      }, 450);
+    });
+    container.addEventListener('pointermove', (e) => {
+      if (pressTimer && (Math.abs(e.clientX - pressX) > 10 || Math.abs(e.clientY - pressY) > 10)) cancelPress();
+    });
+    ['pointerup', 'pointercancel', 'pointerleave'].forEach(type => container.addEventListener(type, cancelPress));
+    // El "click" llega justo después de soltar; pasado un instante ya no hay nada que ignorar
+    ['pointerup', 'pointercancel'].forEach(type => container.addEventListener(type, () => {
+      if (suppressClick) setTimeout(() => { suppressClick = false; }, 400);
+    }));
+    container.addEventListener('contextmenu', (e) => e.preventDefault());
+
     container.addEventListener('click', (e) => {
+      if (suppressClick) { suppressClick = false; return; }
       const row = e.target.closest('.track-row');
       if (!row || !container.contains(row)) return;
       const tracks = container._tracks || [];
       const t = tracks[parseInt(row.dataset.index, 10)];
       if (!t) return;
+      if (selecting) { toggleSelect(t); return; }
       if (e.target.closest('.row-menu')) {
         openTrackMenu(t, { tracks, source: getSource() });
         return;
@@ -1077,31 +1128,132 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   // ----- Eliminar canciones del teléfono -----
-  function confirmDeleteTrack(track) {
+  function confirmDeleteTrack(track) { confirmDeleteTracks([track]); }
+
+  function confirmDeleteTracks(tracks, onDone) {
+    const one = tracks.length === 1;
     confirmSheet(
-      `¿Eliminar «${track.title}»?`,
-      'Se borrará el archivo de tu teléfono y no se puede deshacer. Android te pedirá confirmar.',
+      one ? `¿Eliminar «${tracks[0].title}»?` : `¿Eliminar ${tracks.length} canciones?`,
+      `Se borrar${one ? 'á el archivo' : 'án los archivos'} de tu teléfono y no se puede deshacer. Android te pedirá confirmar.`,
       'Eliminar',
-      () => deleteTracksFromPhone([track])
+      async () => {
+        const ok = await deleteTracksFromPhone(tracks);
+        if (ok && onDone) onDone();
+      }
     );
   }
 
   async function deleteTracksFromPhone(tracks) {
     try {
       const { deleted, cancelled } = await NocturneLibrary.deleteTracks(tracks);
-      if (cancelled) { showToast('No se eliminó nada.'); return; }
+      if (cancelled) { showToast('No se eliminó nada.'); return false; }
       const gone = tracks.filter(t => deleted.includes(t.contentUri));
-      if (!gone.length) { showToast('No se pudo eliminar la canción.'); return; }
+      if (!gone.length) { showToast('No se pudo eliminar la canción.'); return false; }
       removeTracksFromApp(gone);
       showToast(gone.length === 1 ? 'Canción eliminada.' : `${gone.length} canciones eliminadas.`);
+      return true;
     } catch (e) {
       console.warn('No se pudo eliminar:', e);
       const msg = (e && e.message) || '';
       if (e && e.code === 'UNSUPPORTED') showToast('Para eliminar desde la app se necesita Android 10 o superior.');
       else if (e && e.code === 'PERMISSION_DENIED') showToast('Falta el permiso de música para eliminar.');
       else showToast(/curso/i.test(msg) ? 'Espera: ya hay una eliminación en curso.' : 'No se pudo eliminar la canción.');
+      return false;
     }
   }
+
+  // ----- Selección de varias canciones: Compartir · Favoritos · Eliminar -----
+  function selectedTracks() { return Array.from(selectedMap.values()); }
+
+  function syncSelectedRows() {
+    [dom.queueList, dom.listTracks].forEach((c) => {
+      c.querySelectorAll('.track-row').forEach(r => r.classList.toggle('selected', selectedMap.has(r.dataset.id)));
+    });
+  }
+
+  function updateSelectionUI() {
+    const n = selectedMap.size;
+    dom.selCount.textContent = n === 1 ? '1 seleccionada' : `${n} seleccionadas`;
+    const savable = selectedTracks().filter(t => NocturneLists.isSavable(t));
+    dom.btnSelFav.classList.toggle('active', savable.length > 0 && savable.every(t => NocturneLists.isFavorite(t)));
+    const total = selectionContainer && selectionContainer._tracks ? selectionContainer._tracks.length : 0;
+    dom.btnSelAll.textContent = total > 0 && n >= total ? 'Ninguna' : 'Todo';
+  }
+
+  function enterSelection() {
+    if (selecting) return;
+    selecting = true;
+    document.body.classList.add('selecting');
+    dom.selectBar.hidden = false;
+    dom.btnSelShare.hidden = !NocturneLibrary.canShare();
+    dom.btnSelDelete.hidden = !NocturneLibrary.canDelete();
+    pushLayer(leaveSelection); // el botón Atrás de Android también sale de la selección
+    updateSelectionUI();
+  }
+
+  function leaveSelection() {
+    selecting = false;
+    selectionContainer = null;
+    selectedMap.clear();
+    document.body.classList.remove('selecting');
+    dom.selectBar.hidden = true;
+    syncSelectedRows();
+  }
+
+  function toggleSelect(t) {
+    if (selectedMap.has(t.id)) selectedMap.delete(t.id);
+    else selectedMap.set(t.id, t);
+    syncSelectedRows();
+    if (selectedMap.size === 0) { popLayer(); return; } // sin nada marcado se sale de la selección
+    updateSelectionUI();
+  }
+
+  function finishSelection() { if (selecting) popLayer(); }
+
+  dom.btnSelCancel.addEventListener('click', finishSelection);
+
+  dom.btnSelAll.addEventListener('click', () => {
+    const all = (selectionContainer && selectionContainer._tracks) || [];
+    if (!all.length) return;
+    if (selectedMap.size >= all.length) { popLayer(); return; }
+    all.forEach(t => selectedMap.set(t.id, t));
+    syncSelectedRows();
+    updateSelectionUI();
+  });
+
+  dom.btnSelFav.addEventListener('click', () => {
+    const tracks = selectedTracks().filter(t => NocturneLists.isSavable(t));
+    if (!tracks.length) { showToast('Solo las canciones del teléfono se pueden guardar en Favoritas.'); return; }
+    if (tracks.every(t => NocturneLists.isFavorite(t))) {
+      tracks.forEach(t => NocturneLists.removeTrack(NocturneLists.FAV_ID, t));
+      showToast(tracks.length === 1 ? 'Quitada de Favoritas.' : `${tracks.length} quitadas de Favoritas.`);
+    } else {
+      const added = NocturneLists.addTracks(NocturneLists.FAV_ID, tracks);
+      showToast(added === 1 ? 'Agregada a Favoritas.' : `${added} agregadas a Favoritas.`);
+    }
+    updateFavoriteButton(currentTrack());
+    renderListCards();
+    if (currentListId) renderListDetail();
+    finishSelection();
+  });
+
+  dom.btnSelShare.addEventListener('click', async () => {
+    const tracks = selectedTracks().filter(t => t.contentUri);
+    if (!tracks.length) { showToast('Solo las canciones del teléfono se pueden compartir.'); return; }
+    try {
+      await NocturneLibrary.shareTracks(tracks);
+      finishSelection();
+    } catch (e) {
+      console.warn('No se pudo compartir:', e);
+      showToast('No se pudo abrir el menú de compartir.');
+    }
+  });
+
+  dom.btnSelDelete.addEventListener('click', () => {
+    const tracks = selectedTracks().filter(t => t.contentUri);
+    if (!tracks.length) { showToast('Solo las canciones del teléfono se pueden eliminar.'); return; }
+    confirmDeleteTracks(tracks, finishSelection);
+  });
 
   /** Quita de la app (biblioteca, cola, listas y memoria del reproductor) canciones que ya no existen en el teléfono. */
   function removeTracksFromApp(gone) {

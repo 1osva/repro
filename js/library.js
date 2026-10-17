@@ -250,10 +250,25 @@ const NocturneLibrary = (() => {
     return { deleted: (result && result.deleted) || [], cancelled: !!(result && result.cancelled) };
   }
 
+
+  /** ¿Este APK sabe abrir el menú de compartir? */
+  function canShare() {
+    const plugin = getPlugin();
+    return !!(plugin && typeof plugin.shareTracks === 'function');
+  }
+
+  /** Abre el menú de compartir de Android con estas canciones. */
+  async function shareTracks(tracks) {
+    const plugin = getPlugin();
+    if (!plugin || typeof plugin.shareTracks !== 'function') throw new Error('Este APK no incluye la función de compartir.');
+    const uris = tracks.map(t => t.contentUri).filter(Boolean);
+    await plugin.shareTracks({ uris });
+  }
+
   return {
     isAvailable, status, hasPermission, scan, openSettings, needsResolve, resolve, release,
     thumbsSupported, needsThumb, requestThumb, hasImagesPermission, ensureImagesPermission,
-    canDelete, deleteTracks
+    canDelete, deleteTracks, canShare, shareTracks
   };
 })();
 

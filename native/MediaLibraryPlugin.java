@@ -1,13 +1,13 @@
 package __APP_PACKAGE__;
 
 import android.content.ContentResolver;
+import android.content.ClipData;
 import android.content.ContentUris;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.app.PendingIntent;
 import android.app.RecoverableSecurityException;
-import android.content.ContentResolver;
 import android.content.IntentSender;
 import android.database.Cursor;
 import android.graphics.Bitmap;
@@ -25,7 +25,6 @@ import androidx.activity.result.ActivityResultLauncher;
 import androidx.activity.result.IntentSenderRequest;
 import androidx.activity.result.contract.ActivityResultContracts;
 
-import com.getcapacitor.JSArray;
 import com.getcapacitor.JSObject;
 import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
@@ -53,7 +52,8 @@ import java.util.concurrent.Executors;
  *
  * Desde JavaScript: Capacitor.Plugins.MediaLibrary.hasPermission(), .scan(),
  *   .hasImagesPermission(), .requestImagesPermission(), .getThumbnail({ uri, size })
- *   y .deleteTracks({ uris }) (borra del teléfono, con la confirmación del propio Android)
+ *   .deleteTracks({ uris }) (borra del teléfono, con la confirmación del propio Android)
+ *   y .shareTracks({ uris }) (abre el menú de compartir de Android con esos archivos de audio)
  */
 @CapacitorPlugin(
     name = "MediaLibrary",
@@ -475,6 +475,62 @@ public class MediaLibraryPlugin extends Plugin {
                 return ((RecoverableSecurityException) e).getUserAction().getActionIntent().getIntentSender();
             }
             return null;
+        }
+    }
+
+
+    // ------------------------------------------------------------------ compartir canciones
+
+    /** Abre el menú "Compartir" de Android con los archivos de audio elegidos. */
+    @PluginMethod
+    public void shareTracks(PluginCall call) {
+        if (!hasAccess()) {
+            call.reject("Permiso de música denegado", "PERMISSION_DENIED");
+            return;
+        }
+        JSArray array = call.getArray("uris");
+        if (array == null || array.length() == 0) {
+            call.reject("Faltan las canciones a compartir");
+            return;
+        }
+        ArrayList<Uri> uris = new ArrayList<>();
+        try {
+            for (int i = 0; i < array.length(); i++) {
+                String text = array.getString(i);
+                // Solo se aceptan canciones del índice de medios de Android
+                if (text != null && text.startsWith("content://media/")) uris.add(Uri.parse(text));
+            }
+        } catch (JSONException e) {
+            call.reject("Lista de canciones no válida");
+            return;
+        }
+        if (uris.isEmpty()) {
+            call.reject("Ninguna canción válida para compartir");
+            return;
+        }
+
+        try {
+            Intent send;
+            if (uris.size() == 1) {
+                send = new Intent(Intent.ACTION_SEND);
+                send.putExtra(Intent.EXTRA_STREAM, uris.get(0));
+            } else {
+                send = new Intent(Intent.ACTION_SEND_MULTIPLE);
+                send.putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris);
+            }
+            send.setType("audio/*");
+            send.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            // ClipData: así Android concede la lectura de todos los archivos a la app elegida
+            ClipData clip = ClipData.newRawUri(null, uris.get(0));
+            for (int i = 1; i < uris.size(); i++) clip.addItem(new ClipData.Item(uris.get(i)));
+            send.setClipData(clip);
+
+            Intent chooser = Intent.createChooser(send, "Compartir canciones");
+            chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            getContext().startActivity(chooser);
+            call.resolve();
+        } catch (Exception e) {
+            call.reject("No se pudo abrir el menú de compartir: " + e.getMessage(), e);
         }
     }
 
