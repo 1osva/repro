@@ -34,6 +34,8 @@ document.addEventListener('DOMContentLoaded', () => {
   let restorePending = null; // { pos } canción recordada de la última vez, lista para reanudar con Play
   let sessionRestored = false;
   let scrubbing = false; // la persona está deslizando la barra de tiempo
+  let liteMode = false;  // modo ligero: la interfaz se aligera sola si se traba mientras suena música
+  let lastQueueJson = '';
   // Selección de varias canciones (se activa manteniendo presionada una)
   let selecting = false;
   let selectionContainer = null; // lista donde se empezó a seleccionar
@@ -81,7 +83,7 @@ document.addEventListener('DOMContentLoaded', () => {
     miniProgressFill: $('miniProgressFill'), btnSettingsBack: $('btnSettingsBack'),
     aboutBuild: $('aboutBuild'), aboutMusic: $('aboutMusic'), selectBar: $('selectBar'), selCount: $('selCount'), btnSelCancel: $('btnSelCancel'), btnSelAll: $('btnSelAll'),
     btnSelShare: $('btnSelShare'), btnSelFav: $('btnSelFav'), btnSelDelete: $('btnSelDelete'),
-    audioDiagLog: $('audioDiagLog'), btnDiagRefresh: $('btnDiagRefresh'), btnDiagCopy: $('btnDiagCopy'),
+    audioDiagLog: $('audioDiagLog'), btnDiagRefresh: $('btnDiagRefresh'), btnDiagReset: $('btnDiagReset'), btnDiagCopy: $('btnDiagCopy'),
     aboutNotif: $('aboutNotif'), aboutCovers: $('aboutCovers'), aboutBackground: $('aboutBackground'),
     vizEnabledToggle: $('vizEnabledToggle'),
     tabs: document.querySelectorAll('.main-tab'),
@@ -718,10 +720,26 @@ document.addEventListener('DOMContentLoaded', () => {
           coverObserver.unobserve(row);
           const tracks = row.parentElement && row.parentElement._tracks;
           const track = tracks && tracks[parseInt(row.dataset.index, 10)];
-          if (track) NocturneLibrary.requestThumb(track, refreshTrackRows);
+          if (track) NocturneLibrary.requestThumb(track, onThumbReady, row, () => row.isConnected && nearViewport(row));
         });
       }, { rootMargin: '240px 0px' })
     : null;
+
+  const nearViewport = (row) => {
+    const r = row.getBoundingClientRect();
+    return r.bottom > -320 && r.top < window.innerHeight + 320;
+  };
+
+  /** Pone la portada recién leída solo en su fila (sin recorrer las miles de filas de la lista). */
+  function onThumbReady(track, row) {
+    const img = track.cover || track.thumb;
+    if (row && row.isConnected && row.dataset.id === String(track.id) && img) {
+      const cover = row.querySelector('.track-row-cover');
+      if (cover) { cover.style.backgroundImage = `url('${img}')`; cover.textContent = ''; }
+      return;
+    }
+    refreshTrackRows(track);
+  }
 
   function observeCovers(container) {
     if (!coverObserver || !NocturneLibrary.thumbsSupported()) return;
@@ -1887,7 +1905,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function saveQueue() {
     const ids = playlist.filter(t => t.contentUri).map(t => t.id);
-    if (ids.length) storageSet(QUEUE_KEY, JSON.stringify({ ids, src: queueSource }));
+    if (!ids.length) return;
+    const json = JSON.stringify({ ids, src: queueSource });
+    if (json === lastQueueJson) return; // la cola no cambió: no se vuelve a escribir
+    lastQueueJson = json;
+    storageSet(QUEUE_KEY, json);
   }
 
   /** Guarda la canción actual y su posición. Solo canciones del teléfono (las demás no sobreviven al cerrar la app). */
@@ -1989,28 +2011,135 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
+  // ---------------------------------------------------------------------------
+  // Fluidez: se anota qué hacía la persona (desplazar/tocar) para ligar cada tirón con su causa,
+  // y si la interfaz se traba seguido mientras suena música, se aligera sola ("modo ligero").
+  // ---------------------------------------------------------------------------
+  const scrollMarks = [];
+  const tapMarks = [];
+  const pushMark = (arr) => { arr.push(performance.now()); if (arr.length > 80) arr.shift(); };
+  const anyNear = (arr, from, to) => arr.some(t => t >= from && t <= to);
+  let scrollTimer = null;
+
+  document.addEventListener('scroll', () => {
+    pushMark(scrollMarks);
+    if (!liteMode) NocturneLibrary.setThumbMode('scroll'); // al desplazar, las portadas llegan de una en una
+    clearTimeout(scrollTimer);
+    scrollTimer = setTimeout(() => { if (!liteMode) NocturneLibrary.setThumbMode('normal'); }, 200);
+  }, { capture: true, passive: true });
+  document.addEventListener('pointerdown', () => pushMark(tapMarks), { capture: true, passive: true });
+
+  audioEngine.contextProvider = (start, dur) => {
+    const end = start + dur;
+    if (anyNear(scrollMarks, start - 300, end + 150)) return 'scroll';
+    if (anyNear(tapMarks, start - 1000, end + 150)) return 'tap';
+    return 'idle';
+  };
+
+  const recentLong = [];
+  let liteTimer = null;
+  let liteSavedViz = null;
+
+  audioEngine.onLongTask = () => {
+    if (!isPlaying) return;
+    const now = performance.now();
+    recentLong.push(now);
+    while (recentLong.length && now - recentLong[0] > 15000) recentLong.shift();
+    if (liteMode) { armLiteExit(); return; }
+    if (recentLong.length >= 3) enterLiteMode();
+  };
+
+  function armLiteExit() {
+    clearTimeout(liteTimer);
+    liteTimer = setTimeout(exitLiteMode, 90000); // 90 s sin tirones: todo vuelve a la normalidad
+  }
+
+  function enterLiteMode() {
+    liteMode = true;
+    document.body.classList.add('lite');
+    NocturneLibrary.setThumbMode('off');
+    liteSavedViz = visualizer.enabled;
+    visualizer.enabled = false;
+    audioEngine.stats.lite++;
+    audioEngine.logDiag('Modo ligero activado: la interfaz se trabó 3 veces en 15 s');
+    armLiteExit();
+  }
+
+  function exitLiteMode() {
+    if (!liteMode) return;
+    liteMode = false;
+    document.body.classList.remove('lite');
+    NocturneLibrary.setThumbMode('normal');
+    if (liteSavedViz !== null) visualizer.enabled = liteSavedViz;
+    liteSavedViz = null;
+    recentLong.length = 0;
+    audioEngine.logDiag('Modo ligero desactivado');
+  }
+
+  // Contadores acumulados: se guardan para no perderlos al cerrar la app
+  const STATS_KEY = 'nocturne.audiostats.v1';
+  audioEngine.loadStats(readJson(STATS_KEY));
+  let lastStatsJson = '';
+  function saveStats() {
+    const json = JSON.stringify(audioEngine.stats);
+    if (json === lastStatsJson) return;
+    lastStatsJson = json;
+    storageSet(STATS_KEY, json);
+  }
+  setInterval(saveStats, 30000);
+  document.addEventListener('visibilitychange', () => { if (document.hidden) saveStats(); });
+  window.addEventListener('pagehide', saveStats);
+
+  /** Conclusión corta a partir de los contadores (para leer de un vistazo). */
+  function diagVerdict(st) {
+    const L = st.long;
+    const out = [];
+    if (L.total >= 3 && L.scroll / L.total >= 0.5) out.push('La interfaz se traba al desplazar las listas (carga de pantalla compitiendo con el audio).');
+    else if (L.total >= 3 && L.tap / L.total >= 0.5) out.push('La interfaz se traba al tocar botones o menús.');
+    else if (L.total >= 3) out.push('Hay tirones aun en reposo (trabajo interno, como preparar la siguiente canción).');
+    if (st.ctxSuspend > 0) out.push('El sistema suspende el audio (cambio de audífonos u otra app).');
+    if (st.sysPause > 0) out.push('El sistema pausa el audio (llamada, otra app o audífonos).');
+    if (st.stuck > 0 && L.total === 0 && st.ctxSuspend === 0 && st.sysPause === 0) out.push('El audio se detiene sin tirones de interfaz: apunta al archivo, al decodificador o a la conexión de los audífonos.');
+    if (st.waiting + st.stalled > 0 && !out.length) out.push('El archivo tarda en entregar datos (formato pesado o poca memoria).');
+    return out.length ? out : ['Sin problemas registrados.'];
+  }
+
   async function buildAudioDiagText() {
     const ua = navigator.userAgent || '';
     const android = (ua.match(/Android ([\d.]+); ([^)]+)\)/) || []);
     const webview = (ua.match(/Chrome\/([\d.]+)/) || [])[1] || '?';
     const outs = await NocturneMediaControls.audioOutputs();
     const t = currentTrack();
+    const st = audioEngine.stats;
+    const L = st.long;
+    const since = new Date(st.since);
+    const pad = (n) => String(n).padStart(2, '0');
     const lines = [
-      `Teléfono: Android ${android[1] || '?'} · ${android[2] || '?'}`,
-      `WebView: Chrome ${webview}`,
-      `Frecuencia del audio: ${audioEngine.ctx ? audioEngine.ctx.sampleRate + ' Hz' : 'sin iniciar'}`,
-      `Salida actual: ${outs ? (outs.join(', ') || 'ninguna') : 'desconocida'}`,
-      `Crossfade: ${audioEngine.crossfadeDuration}s · Fade-in: ${audioEngine.fadeInDuration}s`,
+      `Nocturne diag v2 · contadores desde ${pad(since.getDate())}/${pad(since.getMonth() + 1)} ${pad(since.getHours())}:${pad(since.getMinutes())}`,
+      `Android ${android[1] || '?'} · ${android[2] || '?'} · WebView ${webview}`,
+      `Salida: ${outs ? (outs.join(', ') || 'ninguna') : 'desconocida'} · ${audioEngine.ctx ? audioEngine.ctx.sampleRate + ' Hz' : 'audio sin iniciar'} · crossfade ${audioEngine.crossfadeDuration}s`,
       t ? `Canción: ${t.title} (${(String(t.fileName || '').split('.').pop() || '?').toUpperCase()})` : 'Canción: ninguna',
-      '— Eventos recientes —'
+      `Tirones ≥120 ms: ${L.total} (desplazando ${L.scroll} · tocando ${L.tap} · reposo ${L.idle}) · máx ${L.max} ms`,
+      `Audio: esperó ${st.waiting} · atorado ${st.stalled} · pausas del sistema ${st.sysPause} · suspendido ${st.ctxSuspend} · se detuvo ${st.stuck}`,
+      `Autocorrección: reanudar ${st.fix.resume} · re-sincronizar ${st.fix.resync} · recargar ${st.fix.reload} · modo ligero ${st.lite} (ahora: ${liteMode ? 'sí' : 'no'})`,
+      'Causa probable: ' + diagVerdict(st).join(' '),
+      '— Últimos eventos —'
     ];
-    return lines.concat(audioEngine.diag.length ? audioEngine.diag : ['(sin eventos todavía)']).join('\n');
+    const recent = audioEngine.diag.slice(-12);
+    return lines.concat(recent.length ? recent : ['(sin eventos todavía)']).join('\n');
   }
 
   async function renderAudioDiag() {
     dom.audioDiagLog.textContent = await buildAudioDiagText();
   }
   dom.btnDiagRefresh.addEventListener('click', renderAudioDiag);
+  dom.btnDiagReset.addEventListener('click', () => {
+    audioEngine.resetStats();
+    audioEngine.diag.length = 0;
+    saveStats();
+    renderAudioDiag();
+    showToast('Contadores reiniciados.');
+  });
   dom.btnDiagCopy.addEventListener('click', async () => {
     const text = await buildAudioDiagText();
     dom.audioDiagLog.textContent = text;

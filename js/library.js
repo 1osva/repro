@@ -144,8 +144,12 @@ const NocturneLibrary = (() => {
   // filas que aparecieron se atienden primero (así, al desplazarse rápido, no se acumulan).
   // ---------------------------------------------------------------------------
   const THUMB_SIZE = 160;
-  const THUMB_CONCURRENCY = 3;
   const thumbStack = [];
+  // Ritmo de lectura de portadas según lo que haga la persona:
+  //  normal → 2 a la vez · scroll → 1 cada ~250 ms (para no estorbar al desplazar) · off → ninguna (modo ligero)
+  const THUMB_MODES = { normal: { concurrency: 2, gap: 40 }, scroll: { concurrency: 1, gap: 250 }, off: { concurrency: 0, gap: 0 } };
+  let thumbMode = 'normal';
+  let thumbTimer = null;
   const albumThumbs = new Map(); // las canciones de un mismo álbum comparten la misma portada
   let thumbActive = 0;
 
@@ -185,27 +189,43 @@ const NocturneLibrary = (() => {
   }
 
   function pumpThumbs() {
-    while (thumbActive < THUMB_CONCURRENCY && thumbStack.length) {
+    const mode = THUMB_MODES[thumbMode];
+    while (thumbActive < mode.concurrency && thumbStack.length) {
       const job = thumbStack.pop();
       const track = job.track;
       if (!needsThumb(track)) continue;
+      if (job.wanted && !job.wanted()) continue; // la fila ya salió de la pantalla: no vale la pena
       thumbActive++;
       fetchThumb(track)
         .then((url) => {
           if (url) track.thumb = url;
           else track._thumbDone = true; // esta canción no trae portada
-          if (url && job.onReady) job.onReady(track);
+          if (url && job.onReady) job.onReady(track, job.row);
         })
         .catch(() => { track._thumbFails = (track._thumbFails || 0) + 1; })
-        .then(() => { thumbActive--; pumpThumbs(); });
+        .then(() => {
+          thumbActive--;
+          // Pequeña pausa entre portadas para dejar respirar a la interfaz y al audio
+          if (thumbStack.length && !thumbTimer) {
+            thumbTimer = setTimeout(() => { thumbTimer = null; pumpThumbs(); }, THUMB_MODES[thumbMode].gap);
+          }
+        });
     }
   }
 
-  /** Pide la portada de una pista; cuando llega, avisa con onReady(track). */
-  function requestThumb(track, onReady) {
+  /** Pide la portada de una pista; cuando llega, avisa con onReady(track, row). */
+  function requestThumb(track, onReady, row, wanted) {
     if (!thumbsSupported() || !needsThumb(track)) return;
-    thumbStack.push({ track, onReady });
+    thumbStack.push({ track, onReady, row, wanted });
+    if (thumbStack.length > 120) thumbStack.splice(0, thumbStack.length - 120); // solo importan las más recientes
     pumpThumbs();
+  }
+
+  /** 'normal' | 'scroll' | 'off': qué tan rápido se leen las portadas. */
+  function setThumbMode(mode) {
+    if (!THUMB_MODES[mode] || mode === thumbMode) return;
+    thumbMode = mode;
+    if (mode !== 'off') pumpThumbs();
   }
 
   /** Permiso de fotos (Android 13+) para las portadas. Sin él las portadas suelen cargar igual. */
@@ -267,7 +287,7 @@ const NocturneLibrary = (() => {
 
   return {
     isAvailable, status, hasPermission, scan, openSettings, needsResolve, resolve, release,
-    thumbsSupported, needsThumb, requestThumb, hasImagesPermission, ensureImagesPermission,
+    thumbsSupported, needsThumb, requestThumb, setThumbMode, hasImagesPermission, ensureImagesPermission,
     canDelete, deleteTracks, canShare, shareTracks
   };
 })();

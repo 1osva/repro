@@ -632,12 +632,7 @@ html.lite *, html.lite *::before, html.lite *::after {
   --soft-cyan: #8fb0ff;
   --soft-purple-glow: rgba(124, 92, 255, 0.22);
   --soft-cyan-glow: rgba(77, 140, 255, 0.22);
-  /* el cambio de color entre canciones es gradual */
-  transition:
-    --accent-purple 0.7s ease, --accent-cyan 0.7s ease,
-    --accent-purple-glow 0.7s ease, --accent-cyan-glow 0.7s ease,
-    --soft-purple 0.7s ease, --soft-cyan 0.7s ease,
-    --soft-purple-glow 0.7s ease, --soft-cyan-glow 0.7s ease;
+  /* El color cambia al instante: animarlo obligaba a recalcular toda la página justo al cambiar de canción */
 }
 
 /* Biblioteca, listas y ajustes usan la versión ligera del color */
@@ -755,4 +750,14 @@ body.selecting .track-row .row-menu { display: none; }
 .select-act:active { background: rgba(255, 255, 255, 0.12); }
 .select-act.active { color: var(--accent-purple); }
 .select-act.danger { color: #ff8da1; }
+
+/* Modo ligero: se activa solo si la interfaz se traba mientras suena música */
+body.lite *,
+body.lite *::before,
+body.lite *::after {
+  transition: none !important;
+  animation: none !important;
+  scroll-behavior: auto !important;
+}
+body.lite .select-bar { box-shadow: none; }
 
