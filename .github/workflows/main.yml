@@ -1,0 +1,26 @@
+name: Compilar y Publicar APK
+
+on:
+  push:
+    branches:
+      - '2.1'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout del código
+        uses: actions/checkout@v4
+
+      # Aquí van tus pasos actuales para compilar el APK
+      # ...
+
+      - name: Publicar Release con el APK
+        if: github.ref == 'refs/heads/2.1'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            path/a/tu/archivo/app-release.apk
