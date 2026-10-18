@@ -35,6 +35,8 @@ document.addEventListener('DOMContentLoaded', () => {
   let sessionRestored = false;
   let scrubbing = false; // la persona está deslizando la barra de tiempo
   let liteMode = false;  // modo ligero: la interfaz se aligera sola si se traba mientras suena música
+  let lastLibrarySig = '';  // huella de la última lista mostrada (de la caché o de la búsqueda)
+  let lastScanned = [];     // esa lista tal como llegó, sin etiquetas añadidas después
   let lastQueueJson = '';
   // Selección de varias canciones (se activa manteniendo presionada una)
   let selecting = false;
@@ -1306,6 +1308,11 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     gone.forEach(t => NocturneLibrary.release(t));
 
+    // La lista guardada para la próxima apertura ya no debe incluirlas
+    lastScanned = lastScanned.filter(t => !isGone(t));
+    lastLibrarySig = NocturneLibrary.signature(lastScanned);
+    NocturneLibrary.saveCache(lastScanned);
+
     // Fuera de Favoritas y de las demás listas
     NocturneLists.all().forEach(l => gone.forEach(t => NocturneLists.removeTrack(l.id, t)));
 
@@ -2203,6 +2210,17 @@ document.addEventListener('DOMContentLoaded', () => {
     showIdleInfo();
   }
 
+  /** Muestra al abrir la app la lista guardada la última vez, sin esperar a que termine la búsqueda. */
+  async function showCachedLibrary() {
+    try {
+      const cached = await NocturneLibrary.loadCache();
+      if (!cached || lastLibrarySig) return; // sin caché, o la búsqueda ya terminó antes
+      lastLibrarySig = cached.sig;
+      lastScanned = cached.tracks;
+      setLibraryTracks(cached.tracks);
+    } catch (e) { /* sin caché: se espera a la búsqueda de siempre */ }
+  }
+
   /** Se muestra si el permiso quedó denegado: Android ya no vuelve a preguntar, hay que activarlo a mano. */
   function showPermissionHelp() {
     openSheet('Falta el permiso de música', (body) => {
@@ -2232,7 +2250,14 @@ document.addEventListener('DOMContentLoaded', () => {
       if (scanned.length === 0) {
         if (!silent) showToast('No encontré música. Prueba con el menú ⋮ → Agregar archivos de audio.');
       } else {
-        setLibraryTracks(scanned);
+        // Si la lista es idéntica a la que ya se ve (caché o búsqueda anterior), no se vuelve a dibujar
+        const sig = NocturneLibrary.signature(scanned);
+        if (sig !== lastLibrarySig) {
+          lastLibrarySig = sig;
+          lastScanned = scanned;
+          setLibraryTracks(scanned);
+          NocturneLibrary.saveCache(scanned);
+        }
         storageSet(COUNT_KEY, String(scanned.length));
         if (!silent || scanned.length !== before) {
           showToast(`${plural(scanned.length, 'canción encontrada', 'canciones encontradas')}.`);
@@ -2263,7 +2288,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
     (async () => {
       if (await NocturneLibrary.hasPermission()) {
-        scanLibrary({ silent: true });
+        showCachedLibrary();           // al instante: la lista de la última vez
+        scanLibrary({ silent: true }); // y en segundo plano se comprueba si algo cambió
       } else if (!storageGet(ASKED_KEY)) {
         // Primer arranque: como cualquier app, pide el permiso de inmediato
         storageSet(ASKED_KEY, '1');

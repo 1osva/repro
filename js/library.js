@@ -7,6 +7,8 @@
  *  - release():  libera esa memoria cuando la canción ya no está cerca de la actual.
  *  - requestThumb(): pide la portada (miniatura) de una canción para mostrarla en las listas,
  *                    sin tener que cargar el archivo de audio completo.
+ *  - saveCache() / loadCache(): guardan en el teléfono (IndexedDB) la lista de canciones y sus portadas
+ *                    para que al abrir la app aparezcan al instante, sin esperar a la búsqueda.
  *
  * Por qué resolve() descarga el archivo entero en lugar de usar la URL directa:
  * el servidor interno de Capacitor responde a las peticiones con "Range" (las que
@@ -84,6 +86,113 @@ const NocturneLibrary = (() => {
     const tracks = (result && result.tracks ? result.tracks : []).map(toTrack);
     tracks.sort((a, b) => a.title.localeCompare(b.title, 'es', { sensitivity: 'base' }));
     return tracks;
+  }
+
+
+  // ---------------------------------------------------------------------------
+  // Caché local (IndexedDB): lista de canciones y portadas en miniatura.
+  // Si algo falla (sin IndexedDB, almacenamiento lleno…) simplemente no se usa y todo sigue como antes.
+  // ---------------------------------------------------------------------------
+  const DB_NAME = 'nocturne-cache';
+  const THUMB_MAX = 6000;                          // tope de portadas guardadas
+  const THUMB_NONE_TTL = 7 * 24 * 3600 * 1000;     // "esta canción no trae portada" se recuerda 7 días
+  let dbPromise = null;
+
+  function openDb() {
+    if (dbPromise) return dbPromise;
+    dbPromise = new Promise((resolve) => {
+      try {
+        if (!window.indexedDB) { resolve(null); return; }
+        const req = window.indexedDB.open(DB_NAME, 1);
+        req.onupgradeneeded = () => {
+          const db = req.result;
+          if (!db.objectStoreNames.contains('kv')) db.createObjectStore('kv');
+          if (!db.objectStoreNames.contains('thumbs')) db.createObjectStore('thumbs');
+        };
+        req.onsuccess = () => { resolve(req.result); trimThumbs(req.result); };
+        req.onerror = () => resolve(null);
+        req.onblocked = () => resolve(null);
+      } catch (e) {
+        resolve(null);
+      }
+    });
+    return dbPromise;
+  }
+
+  /** Si hay demasiadas portadas guardadas, se vacía ese almacén (se vuelven a leer poco a poco). */
+  function trimThumbs(db) {
+    try {
+      const req = db.transaction('thumbs').objectStore('thumbs').count();
+      req.onsuccess = () => {
+        if (req.result > THUMB_MAX) {
+          try { db.transaction('thumbs', 'readwrite').objectStore('thumbs').clear(); } catch (e) { /* sin acción */ }
+        }
+      };
+    } catch (e) { /* sin acción */ }
+  }
+
+  async function idbGet(store, key) {
+    const db = await openDb();
+    if (!db) return undefined;
+    return new Promise((resolve) => {
+      try {
+        const req = db.transaction(store).objectStore(store).get(key);
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => resolve(undefined);
+      } catch (e) {
+        resolve(undefined);
+      }
+    });
+  }
+
+  async function idbPut(store, key, value) {
+    const db = await openDb();
+    if (!db) return false;
+    return new Promise((resolve) => {
+      try {
+        const tx = db.transaction(store, 'readwrite');
+        tx.objectStore(store).put(value, key);
+        tx.oncomplete = () => resolve(true);
+        tx.onerror = () => resolve(false);
+        tx.onabort = () => resolve(false);
+      } catch (e) {
+        resolve(false);
+      }
+    });
+  }
+
+  /** Huella de la lista: si no cambió nada, la app no necesita volver a dibujarla. */
+  function signature(tracks) {
+    let h = 5381;
+    for (const t of tracks) {
+      const text = `${t.contentUri}|${t.size}|${t.title}|${t.artist}|${t.album}|${t.duration}`;
+      for (let i = 0; i < text.length; i++) h = ((h << 5) + h + text.charCodeAt(i)) | 0;
+    }
+    return `${tracks.length}:${h}`;
+  }
+
+  /** Guarda la lista de canciones del teléfono para la próxima vez que se abra la app. */
+  async function saveCache(tracks) {
+    const items = tracks.filter(t => t.contentUri).map(t => ({
+      id: String(t.id).replace(/^lib_/, ''),
+      uri: t.contentUri,
+      name: t.fileName,
+      mime: t.mime,
+      size: t.size,
+      title: t.title,
+      artist: t.artist,
+      album: t.album,
+      duration: t.duration
+    }));
+    return idbPut('kv', 'library', { v: 1, savedAt: Date.now(), items });
+  }
+
+  /** Lee la lista guardada. Devuelve { tracks, sig } o null si no hay. */
+  async function loadCache() {
+    const rec = await idbGet('kv', 'library');
+    if (!rec || rec.v !== 1 || !Array.isArray(rec.items) || rec.items.length === 0) return null;
+    const tracks = rec.items.map(toTrack);
+    return { tracks, sig: signature(tracks) };
   }
 
   /** Abre los ajustes de la app (por si el permiso quedó denegado y Android ya no pregunta). */
@@ -164,7 +273,7 @@ const NocturneLibrary = (() => {
   }
 
   function thumbKey(track) {
-    return track.album && track.artist ? 'a|' + track.album + '|' + track.artist : 'u|' + track.contentUri;
+    return track.album && track.artist ? 'a|' + track.album + '|' + track.artist : 'u|' + track.contentUri + '|' + track.size;
   }
 
   /** JPEG en base64 → URL corta (blob:). Así las listas largas no cargan megas de texto en el HTML. */
@@ -179,9 +288,19 @@ const NocturneLibrary = (() => {
     const key = thumbKey(track);
     let pending = albumThumbs.get(key);
     if (!pending) {
-      pending = getPlugin()
-        .getThumbnail({ uri: track.contentUri, size: THUMB_SIZE })
-        .then((r) => (r && r.cover ? base64ToBlobUrl(r.cover) : ''));
+      pending = (async () => {
+        // 1) ¿ya se leyó antes? sale de la caché local, sin molestar al sistema
+        const rec = await idbGet('thumbs', key);
+        if (rec) {
+          if (rec.b64) return base64ToBlobUrl(rec.b64);
+          if (rec.none && Date.now() - rec.t < THUMB_NONE_TTL) return '';
+        }
+        // 2) primera vez: se pide al sistema y se guarda
+        const r = await getPlugin().getThumbnail({ uri: track.contentUri, size: THUMB_SIZE });
+        const b64 = r && r.cover ? r.cover : '';
+        idbPut('thumbs', key, b64 ? { b64, t: Date.now() } : { none: true, t: Date.now() });
+        return b64 ? base64ToBlobUrl(b64) : '';
+      })();
       albumThumbs.set(key, pending);
       pending.catch(() => albumThumbs.delete(key)); // un error no se queda guardado
     }
@@ -288,7 +407,8 @@ const NocturneLibrary = (() => {
   return {
     isAvailable, status, hasPermission, scan, openSettings, needsResolve, resolve, release,
     thumbsSupported, needsThumb, requestThumb, setThumbMode, hasImagesPermission, ensureImagesPermission,
-    canDelete, deleteTracks, canShare, shareTracks
+    canDelete, deleteTracks, canShare, shareTracks,
+    saveCache, loadCache, signature
   };
 })();
 
