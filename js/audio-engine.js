@@ -155,8 +155,13 @@ class AudioEngine {
 
     // Analizador de frecuencias
     this.analyser = this.ctx.createAnalyser();
-    this.analyser.fftSize = 256;
-    this.analyser.smoothingTimeConstant = 0.72; // más bajo = las barras reaccionan antes al ritmo
+    // 1024 puntos: separa los graves (≈47 Hz por punto) para que las barras sigan a cada instrumento.
+    // El suavizado fino lo hace el visualizador (ataque rápido, caída lenta).
+    this.analyser.fftSize = 1024;
+    this.analyser.smoothingTimeConstant = 0.5;
+    // Rango más amplio que el predeterminado (-100/-30 dB): los graves fuertes ya no se aplanan contra el tope
+    this.analyser.minDecibels = -90;
+    this.analyser.maxDecibels = -12;
 
     // Ganancia Master
     this.masterGain = this.ctx.createGain();

@@ -571,9 +571,10 @@ document.addEventListener('DOMContentLoaded', () => {
     if (currentTrack()) return;
     const n = library.length;
     const info = n ? plural(n, 'canción lista', 'canciones listas') : 'Busca tu música para empezar';
-    dom.currentTitle.textContent = 'Elige una canción';
+    // Sin canción elegida no se muestra título (un espacio fijo mantiene la altura y evita saltos al elegir una)
+    dom.currentTitle.textContent = '\u00A0';
     dom.currentArtist.textContent = n ? info : 'Nocturne Sound Engine';
-    dom.barTitle.textContent = 'Elige una canción';
+    dom.barTitle.textContent = '\u00A0';
     dom.barArtist.textContent = info;
   }
 
