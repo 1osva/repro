@@ -513,32 +513,6 @@ button { font-family: inherit; color: inherit; cursor: pointer; }
 .mini-artist { margin-top: 1px; font-size: 0.75rem; color: var(--text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .mini-player .icon-btn { color: #fff; }
 
-/* Mini visualizador: barritas que reaccionan al audio con el reproductor minimizado */
-.mini-bars {
-  --mb-1: var(--accent-cyan);
-  --mb-2: var(--accent-purple);
-  flex: none;
-  display: flex;
-  align-items: flex-end;
-  gap: 3px;
-  width: 30px;
-  height: 24px;
-  margin: 0 8px 0 4px;
-  opacity: 0;
-  transition: opacity 0.25s ease;
-  pointer-events: none;
-}
-.mini-bars.on { opacity: 1; }
-.mini-bars i {
-  flex: 1;
-  height: 100%;
-  border-radius: 2px;
-  background: linear-gradient(to top, var(--mb-2), var(--mb-1));
-  transform: scaleY(0.12);
-  transform-origin: bottom;
-  will-change: transform;
-}
-
 /* ---------- Hoja inferior y avisos ---------- */
 .sheet-backdrop { position: fixed; inset: 0; z-index: 50; background: rgba(2, 2, 12, 0.62); }
 .sheet {

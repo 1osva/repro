@@ -135,32 +135,7 @@ const NocturneLibrary = (() => {
     track.file = null;
   }
 
-  /** Motor nativo: ¿faltan portada y etiquetas de esta pista? */
-  function needsMetadata(track) {
-    return !!(track && track.contentUri && !track._metaDone);
-  }
-
-  /**
-   * Motor nativo: el audio lo reproduce Android directamente, así que el archivo solo se lee
-   * para sacar portada, artista y álbum, y se libera de memoria enseguida.
-   */
-  function resolveMetadata(track) {
-    if (!needsMetadata(track)) return Promise.resolve(track);
-    if (track._metaResolving) return track._metaResolving;
-
-    track._metaResolving = (async () => {
-      await resolve(track);
-      track._metaDone = true;
-      release(track);
-      return track;
-    })();
-
-    const clear = () => { track._metaResolving = null; };
-    track._metaResolving.then(clear, clear);
-    return track._metaResolving;
-  }
-
-  return { isAvailable, status, hasPermission, scan, openSettings, needsResolve, resolve, release, needsMetadata, resolveMetadata };
+  return { isAvailable, status, hasPermission, scan, openSettings, needsResolve, resolve, release };
 })();
 
 window.NocturneLibrary = NocturneLibrary;

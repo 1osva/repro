@@ -1,20 +1,11 @@
 package __APP_PACKAGE__;
 
-import android.content.ActivityNotFoundException;
-import android.content.Context;
-import android.content.Intent;
 import android.content.pm.PackageManager;
-import android.media.AudioDeviceInfo;
-import android.media.AudioManager;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
-import android.net.Uri;
 import android.os.Build;
-import android.os.PowerManager;
-import android.provider.Settings;
 import android.util.Base64;
 
-import com.getcapacitor.JSArray;
 import com.getcapacitor.JSObject;
 import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
@@ -30,8 +21,6 @@ import com.getcapacitor.annotation.PermissionCallback;
  *   .update({ title, artist, album, duration, position, playing, cover })
  *   .stop()
  *   .hasNotificationPermission() / .requestNotificationPermission()
- *   .isIgnoringBatteryOptimizations() / .requestIgnoreBatteryOptimizations()
- *       (para que Android no corte la música al salir de la app o apagar la pantalla)
  *   .addListener('mediaAction', ({ action, position }) => ...)
  *       action: 'play' | 'pause' | 'next' | 'previous' | 'seek' | 'stop'
  */
@@ -132,95 +121,6 @@ public class MediaControlsPlugin extends Plugin {
     private void onNotificationPermissionResult(PluginCall call) {
         JSObject result = new JSObject();
         result.put("granted", canNotify());
-        call.resolve(result);
-    }
-
-    // ------------------------------------------------------------------ segundo plano (ahorro de batería)
-
-    private boolean ignoringBatteryOptimizations() {
-        if (Build.VERSION.SDK_INT < 23) return true; // no existe el ahorro agresivo en versiones anteriores
-        PowerManager pm = (PowerManager) getContext().getSystemService(Context.POWER_SERVICE);
-        return pm != null && pm.isIgnoringBatteryOptimizations(getContext().getPackageName());
-    }
-
-    /** Devuelve { ignoring: boolean }: true si la app ya está exenta del ahorro de batería. */
-    @PluginMethod
-    public void isIgnoringBatteryOptimizations(PluginCall call) {
-        JSObject result = new JSObject();
-        result.put("ignoring", ignoringBatteryOptimizations());
-        call.resolve(result);
-    }
-
-    /**
-     * Muestra el aviso del sistema "¿Permitir que la app funcione siempre en segundo plano?".
-     * Si el teléfono no lo trae, abre la lista de ajustes de optimización de batería.
-     */
-    @PluginMethod
-    public void requestIgnoreBatteryOptimizations(PluginCall call) {
-        JSObject result = new JSObject();
-        if (ignoringBatteryOptimizations()) {
-            result.put("ignoring", true);
-            call.resolve(result);
-            return;
-        }
-        Context context = getContext();
-        try {
-            Intent intent = new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS);
-            intent.setData(Uri.parse("package:" + context.getPackageName()));
-            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-            context.startActivity(intent);
-        } catch (ActivityNotFoundException | SecurityException e) {
-            try {
-                Intent fallback = new Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS);
-                fallback.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                context.startActivity(fallback);
-            } catch (Exception e2) {
-                call.reject("No se pudieron abrir los ajustes de batería: " + e2.getMessage(), e2);
-                return;
-            }
-        }
-        result.put("ignoring", false); // la persona decide en el aviso; se vuelve a consultar después
-        call.resolve(result);
-    }
-
-    // ------------------------------------------------------------------ diagnóstico: salida de audio
-
-    private static String outputName(int type) {
-        switch (type) {
-            case AudioDeviceInfo.TYPE_BUILTIN_SPEAKER: return "Altavoz del teléfono";
-            case AudioDeviceInfo.TYPE_BUILTIN_EARPIECE: return "Auricular de llamadas del teléfono";
-            case AudioDeviceInfo.TYPE_WIRED_HEADPHONES:
-            case AudioDeviceInfo.TYPE_WIRED_HEADSET: return "Audífonos con cable";
-            case AudioDeviceInfo.TYPE_BLUETOOTH_A2DP: return "Bluetooth (A2DP, música)";
-            case AudioDeviceInfo.TYPE_BLUETOOTH_SCO: return "Bluetooth (SCO, llamadas: mala calidad)";
-            case AudioDeviceInfo.TYPE_USB_HEADSET:
-            case AudioDeviceInfo.TYPE_USB_DEVICE:
-            case AudioDeviceInfo.TYPE_USB_ACCESSORY: return "USB";
-            case 26: return "Bluetooth LE (audífonos)";
-            case 27: return "Bluetooth LE (bocina)";
-            case 30: return "Bluetooth LE (difusión)";
-            default: return "Otra salida (tipo " + type + ")";
-        }
-    }
-
-    /** Devuelve { outputs: ["Bluetooth (A2DP, música)", ...] } con las salidas de audio conectadas ahora. */
-    @PluginMethod
-    public void getAudioOutputs(PluginCall call) {
-        JSArray outputs = new JSArray();
-        try {
-            if (Build.VERSION.SDK_INT >= 23) {
-                AudioManager am = (AudioManager) getContext().getSystemService(Context.AUDIO_SERVICE);
-                if (am != null) {
-                    for (AudioDeviceInfo device : am.getDevices(AudioManager.GET_DEVICES_OUTPUTS)) {
-                        outputs.put(outputName(device.getType()));
-                    }
-                }
-            }
-        } catch (Exception e) {
-            // sin datos: solo es diagnóstico
-        }
-        JSObject result = new JSObject();
-        result.put("outputs", outputs);
         call.resolve(result);
     }
 }

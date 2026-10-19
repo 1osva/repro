@@ -59,3 +59,7 @@ No requiere instalar ningún programa ni ejecutar comandos en la terminal.
 | `Shift + Flecha Izquierda` | Canción anterior |
 | `M` | Silenciar / Restaurar volumen |
 | `S` | Activar / Desactivar Smart Shuffle |
+
+### Compilación Android con módulos nativos
+
+Después de `npx cap add android`, ejecutar `npm run capacitor:update:after` antes de compilar. Este paso copia `MediaLibraryPlugin`, `MediaControlsPlugin`, el servicio de notificación, sus iconos y los permisos al proyecto Android generado. El flujo de GitHub Actions ya ejecuta este paso automáticamente.

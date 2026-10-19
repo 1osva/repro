@@ -75,7 +75,7 @@ class AudioEngine {
     // Analizador de frecuencias
     this.analyser = this.ctx.createAnalyser();
     this.analyser.fftSize = 256;
-    this.analyser.smoothingTimeConstant = 0.72; // más bajo = las barras reaccionan antes al ritmo
+    this.analyser.smoothingTimeConstant = 0.42; // respuesta rápida, especialmente en Android
 
     // Ganancia Master
     this.masterGain = this.ctx.createGain();
@@ -187,42 +187,6 @@ class AudioEngine {
   getInactivePlayer() {
     return this.players[1 - this.activePlayerIndex];
   }
-
-  // --- Estado de reproducción (la app lo consulta aquí, sin tocar los <audio> directamente) ---
-
-  /** Segundos transcurridos de la canción actual. */
-  getCurrentTime() {
-    const a = this.getActivePlayer().audio;
-    return a ? (a.currentTime || 0) : 0;
-  }
-
-  /** Duración real en segundos (0 si aún no se conoce). */
-  getDuration() {
-    const a = this.getActivePlayer().audio;
-    return a && isFinite(a.duration) && a.duration > 0 ? a.duration : 0;
-  }
-
-  /** ¿Está sonando algo (archivo o demo sintética)? */
-  isAudioPlaying() {
-    const a = this.getActivePlayer().audio;
-    return !!((a && !a.paused) || this.synthActive);
-  }
-
-  /** Posición y duración de `track`; durante un crossfade la canción nueva está en el otro reproductor. */
-  getPlaybackInfo(track) {
-    const p = (track && this.players.find(pl => pl.track && pl.track.id === track.id)) || this.getActivePlayer();
-    const a = p && p.audio;
-    return {
-      position: a ? (a.currentTime || 0) : 0,
-      duration: a && isFinite(a.duration) && a.duration > 0 ? a.duration : 0
-    };
-  }
-
-  /** ¿Se reproducirá `track` con el motor nativo? (solo lo cambia NativeAudioEngine) */
-  usesNative() { return false; }
-
-  /** Quita la siguiente canción ya precargada (solo hace algo el motor nativo). */
-  clearNext() {}
 
   /**
    * Deja lista la siguiente canción en el reproductor libre ANTES del crossfade.

@@ -212,8 +212,12 @@ class Visualizer {
   _latencyMs() {
     const ctx = this.audioEngine && this.audioEngine.ctx;
     let ms = 0;
-    if (ctx) ms = ((ctx.outputLatency || 0) + (ctx.baseLatency || 0)) * 1000;
-    return Math.max(0, Math.min(600, ms + (this.syncOffsetMs || 0)));
+    // En Android/WebView outputLatency puede reportar una latencia estimada demasiado
+    // alta o inestable; retrasar el historial hace que las barras parezcan congeladas.
+    // Allí se dibuja con la muestra actual; el ajuste manual sigue disponible.
+    const nativeAndroid = !!(window.Capacitor && typeof window.Capacitor.isNativePlatform === 'function' && window.Capacitor.isNativePlatform()) || /Android/i.test(navigator.userAgent);
+    if (ctx && !nativeAndroid) ms = ((ctx.outputLatency || 0) + (ctx.baseLatency || 0)) * 1000;
+    return Math.max(0, Math.min(nativeAndroid ? 120 : 600, ms + (this.syncOffsetMs || 0)));
   }
 
   /** Guarda lo que "suena" en este instante para mostrarlo cuando de verdad se oiga. */
@@ -252,7 +256,10 @@ class Visualizer {
     const h = this.height;
 
     const analyser = this.audioEngine.analyser;
-    const isPlaying = this.audioEngine.isAudioPlaying();
+    const isPlaying = this.audioEngine._initialized && (
+      (this.audioEngine.getActivePlayer().audio && !this.audioEngine.getActivePlayer().audio.paused) ||
+      this.audioEngine.synthActive
+    );
 
     const now = performance.now();
     let snap = null;
@@ -284,8 +291,7 @@ class Visualizer {
 
     if (!snap) {
       if (!this.enabled && isPlaying) return; // animación apagada: queda solo la portada
-      // Motor nativo: suena, pero todavía no hay espectro que dibujar
-      this.drawIdleState(w, h, isPlaying && !analyser);
+      this.drawIdleState(w, h);
       return;
     }
 
@@ -355,7 +361,7 @@ class Visualizer {
     }
   }
 
-  drawIdleState(w, h, nativeNoSpectrum = false) {
+  drawIdleState(w, h) {
     const ctx = this.ctx;
     this.idlePhase += 0.02;
 
@@ -376,7 +382,7 @@ class Visualizer {
     ctx.font = '600 11px "Plus Jakarta Sans", sans-serif';
     ctx.letterSpacing = '2px';
     ctx.textAlign = 'center';
-    ctx.fillText(nativeNoSpectrum ? 'MOTOR NATIVO · SIN ESPECTRO AÚN' : 'ELIGE UNA CANCIÓN', w / 2, h / 2 + 35);
+    ctx.fillText('ELIGE UNA CANCIÓN', w / 2, h / 2 + 35);
     ctx.restore();
   }
 
@@ -579,68 +585,3 @@ class Visualizer {
 }
 
 window.Visualizer = Visualizer;
-
-/**
- * MINI VISUALIZADOR (barra inferior)
- * 5 barritas que reaccionan al audio cuando el reproductor está minimizado.
- * Solo trabaja mientras suena música, la animación está activada y el reproductor
- * completo está cerrado (ahí ya dibuja el Visualizer grande), así que casi no gasta batería.
- */
-class MiniBars {
-  constructor(elementId, audioEngine, visualizer) {
-    this.el = document.getElementById(elementId);
-    this.bars = this.el ? Array.from(this.el.children) : [];
-    this.audioEngine = audioEngine;
-    this.visualizer = visualizer;
-    this.data = null;
-    this.levels = new Array(this.bars.length).fill(0);
-    // Rangos de bins del analizador (fftSize 256 → 128 bins): graves a agudos
-    this.ranges = [[1, 3], [4, 8], [9, 16], [17, 32], [33, 64]];
-    this.lastDraw = 0;
-    this.lastPrimary = null;
-    if (this.el) requestAnimationFrame((t) => this.loop(t));
-  }
-
-  _shouldRun() {
-    const e = this.audioEngine;
-    if (!e || !e._initialized || !e.analyser || e.native) return false;
-    if (document.hidden) return false;
-    if (this.visualizer && this.visualizer.enabled === false) return false;
-    if (this.visualizer && this.visualizer.paused === false) return false; // reproductor grande abierto
-    return e.isAudioPlaying();
-  }
-
-  loop(now) {
-    requestAnimationFrame((t) => this.loop(t));
-    const run = this._shouldRun();
-    this.el.classList.toggle('on', run);
-    if (!run) return;
-    if (now - this.lastDraw < 33) return; // ~30 fps es suficiente para 5 barras
-    this.lastDraw = now;
-
-    const analyser = this.audioEngine.analyser;
-    if (!this.data || this.data.length !== analyser.frequencyBinCount) {
-      this.data = new Uint8Array(analyser.frequencyBinCount);
-    }
-    analyser.getByteFrequencyData(this.data);
-
-    // Colores de la portada actual
-    const pal = this.visualizer && this.visualizer.palette;
-    if (pal && pal.primary !== this.lastPrimary) {
-      this.lastPrimary = pal.primary;
-      this.el.style.setProperty('--mb-1', pal.secondary);
-      this.el.style.setProperty('--mb-2', pal.primary);
-    }
-
-    for (let i = 0; i < this.bars.length; i++) {
-      const [a, b] = this.ranges[i];
-      let sum = 0;
-      let n = 0;
-      for (let k = a; k <= b && k < this.data.length; k++) { sum += this.data[k]; n++; }
-      const target = n ? Math.min(1, Math.pow(sum / n / 255, 0.85) * 1.15) : 0;
-      // Sube rápido, baja suave
-      this.levels[i] = target > this.levels[i] ? target : this.levels[i] * 0.82 + target * 0.18;
-      this.bars[i].style.transform = `scaleY(${Math.max(0.12, this.levels[i]).toFixed(3)})`;
-    }
-  }
-}

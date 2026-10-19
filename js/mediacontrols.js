@@ -126,12 +126,6 @@ const NocturneMediaControls = (() => {
     }
   }
 
-  /** La portada de la canción actual llegó después de empezar: volver a enviarla. */
-  function refreshCover() {
-    lastTrackId = null;
-    sync();
-  }
-
   /** Quita la notificación y detiene el servicio. */
   function stop() {
     lastTrackId = null;
@@ -149,7 +143,7 @@ const NocturneMediaControls = (() => {
     });
   }
 
-  return { status, isAvailable, setProvider, sync, refreshCover, stop, onAction, notificationPermission };
+  return { status, isAvailable, setProvider, sync, stop, onAction, notificationPermission };
 })();
 
 window.NocturneMediaControls = NocturneMediaControls;

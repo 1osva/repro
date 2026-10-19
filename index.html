@@ -156,17 +156,6 @@
           </div>
         </div>
 
-        <div class="card" id="nativeEngineCard" style="display:none;">
-          <h3>Motor de audio</h3>
-          <div class="control-row">
-            <div class="control-label">
-              <span>Reproductor nativo de Android</span>
-              <input type="checkbox" id="nativeEngineToggle" class="switch" checked>
-            </div>
-            <p class="muted-note">Reproduce la música del teléfono con el reproductor de Android (Media3): sin cortes por el navegador y con el códec Bluetooth que negocien tus audífonos (SBC, AAC, LDAC, LHDC). Por ahora, con él activado no funcionan el crossfade, el ecualizador ni las barras del visualizador. Apágalo para recuperarlos. El cambio se aplica al volver a abrir la app.</p>
-          </div>
-        </div>
-
         <div class="card">
           <h3>Visualizador</h3>
           <div class="control-row">
@@ -220,7 +209,6 @@
           <div class="mini-title" id="barTitle">Elige una canción</div>
           <div class="mini-artist" id="barArtist">Nocturne Audio</div>
         </div>
-        <div class="mini-bars" id="miniBars" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div>
       </div>
       <button class="icon-btn" id="btnMiniPlay" type="button" aria-label="Reproducir o pausar">
         <svg id="miniPlayIcon" viewBox="0 0 24 24" width="26" height="26" fill="currentColor"><polygon points="7 3.5 20 12 7 20.5 7 3.5"/></svg>
@@ -331,7 +319,6 @@
 
   <!-- Scripts modulares -->
   <script src="js/audio-engine.js"></script>
-  <script src="js/native-player.js"></script>
   <script src="js/smart-shuffle.js"></script>
   <script src="js/visualizer.js"></script>
   <script src="js/metadata-parser.js"></script>

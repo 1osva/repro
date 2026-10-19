@@ -26,7 +26,7 @@ if (!fs.existsSync(androidDir)) fail('no existe android/. Ejecuta antes: npx cap
 if (!fs.existsSync(javaDir)) fail('no existe ' + javaDir + ' (¿cambió el appId?)');
 
 // 1) Código nativo: se sustituye el paquete por el appId
-const javaFiles = ['MediaLibraryPlugin.java', 'MediaControlsPlugin.java', 'MediaNotificationService.java', 'NativeAudioPlayer.java', 'NativePlayerPlugin.java', 'MainActivity.java'];
+const javaFiles = ['MediaLibraryPlugin.java', 'MediaControlsPlugin.java', 'MediaNotificationService.java', 'MainActivity.java'];
 for (const file of javaFiles) {
   const src = fs.readFileSync(path.join(root, 'native', file), 'utf8').replace(/__APP_PACKAGE__/g, appId);
   fs.writeFileSync(path.join(javaDir, file), src);
@@ -77,21 +77,4 @@ if (!manifest.includes(`android:name="${serviceName}"`)) {
 
 fs.writeFileSync(manifestPath, manifest);
 console.log('  + AndroidManifest.xml: ' + added + ' elemento(s) nuevo(s)');
-// 4) Gradle: Media3 (ExoPlayer) para el reproductor nativo
-const gradlePath = path.join(androidDir, 'app', 'build.gradle');
-if (!fs.existsSync(gradlePath)) fail('no existe ' + gradlePath);
-let gradle = fs.readFileSync(gradlePath, 'utf8');
-const MEDIA3 = '1.8.0';
-if (!gradle.includes('androidx.media3:media3-exoplayer')) {
-  const idx = gradle.lastIndexOf('dependencies {');
-  if (idx < 0) fail('no encontré el bloque dependencies en app/build.gradle');
-  const at = idx + 'dependencies {'.length;
-  gradle = gradle.slice(0, at) +
-    `\n    implementation "androidx.media3:media3-exoplayer:${MEDIA3}"` +
-    `\n    implementation "androidx.media3:media3-common:${MEDIA3}"` +
-    gradle.slice(at);
-  fs.writeFileSync(gradlePath, gradle);
-  console.log('  + app/build.gradle: Media3 ' + MEDIA3);
-}
-
 console.log('patch-android: listo');

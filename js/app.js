@@ -9,9 +9,8 @@
  */
 
 document.addEventListener('DOMContentLoaded', () => {
-  const audioEngine = NocturneNative.createEngine();
+  const audioEngine = new AudioEngine();
   const visualizer = new Visualizer('visualizerCanvas', audioEngine);
-  const miniBars = new MiniBars('miniBars', audioEngine, visualizer);
 
   // ---------------------------------------------------------------------------
   // Estado
@@ -311,9 +310,7 @@ document.addEventListener('DOMContentLoaded', () => {
     markActiveRows();
 
     // Las pistas de la biblioteca del teléfono se leen justo antes de sonar
-    // (con el motor nativo no hace falta: Android las reproduce directamente)
-    const nativeTrack = audioEngine.usesNative(track);
-    if (!nativeTrack && NocturneLibrary.needsResolve(track)) {
+    if (NocturneLibrary.needsResolve(track)) {
       dom.barTitle.textContent = track.title;
       dom.barArtist.textContent = 'Cargando…';
       try {
@@ -348,19 +345,6 @@ document.addEventListener('DOMContentLoaded', () => {
       refreshTrackRows(track);
       manageLibraryMemory(playlist.indexOf(track));
     }, 350);
-
-    // Motor nativo: portada y etiquetas se leen aparte, ya con la música sonando
-    if (nativeTrack && NocturneLibrary.needsMetadata(track)) {
-      setTimeout(() => {
-        if (requestId !== playRequestId) return;
-        NocturneLibrary.resolveMetadata(track).then(() => {
-          if (requestId !== playRequestId) return;
-          updateNowPlayingUI(track);
-          refreshTrackRows(track);
-          NocturneMediaControls.refreshCover();
-        }).catch((e) => console.warn('No se pudieron leer las etiquetas:', e));
-      }, 700);
-    }
   }
 
   /** Libera la memoria de las canciones del teléfono que ya no están cerca de la actual. */
@@ -392,13 +376,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const current = currentTrack();
     const next = peekNextTrack();
     if (!current || !next || prefetchedFor === current) return;
-    if (repeatMode === 'one') { audioEngine.clearNext(); return; }
     prefetchedFor = current;
-    // Motor nativo: basta entregar el content:// (sin leer el archivo): pasa a ella sin huecos
-    if (audioEngine.native && audioEngine.usesNative(next)) {
-      audioEngine.preloadTrack(next);
-      return;
-    }
     try {
       await NocturneLibrary.resolve(next);
       if (currentTrack() === current && !audioEngine.isCrossfading) audioEngine.preloadTrack(next);
@@ -429,8 +407,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function prevTrack() {
     if (playlist.length === 0) return;
+    const activePlayer = audioEngine.getActivePlayer();
+
     // Si pasaron más de 3 segundos, reiniciar la pista actual
-    if (audioEngine.getCurrentTime() > 3) {
+    if (activePlayer.audio && activePlayer.audio.currentTime > 3) {
       audioEngine.seek(0);
       syncMedia();
       return;
@@ -492,9 +472,11 @@ document.addEventListener('DOMContentLoaded', () => {
   NocturneMediaControls.setProvider(() => {
     const t = currentTrack();
     if (!t) return null;
-    // Durante un crossfade la canción nueva está en otro reproductor: el motor sabe cuál tiene ESTA canción
-    const info = audioEngine.getPlaybackInfo(t);
-    return { track: t, playing: isPlaying, position: info.position, duration: info.duration || t.duration || 0 };
+    // Durante un crossfade la canción nueva está en el otro reproductor: buscar el que tiene ESTA canción
+    const p = (audioEngine.players || []).find(pl => pl.track && pl.track.id === t.id) || audioEngine.getActivePlayer();
+    const a = p && p.audio;
+    const dur = a && isFinite(a.duration) && a.duration > 0 ? a.duration : (t.duration || 0);
+    return { track: t, playing: isPlaying, position: a ? (a.currentTime || 0) : 0, duration: dur };
   });
 
   function syncMedia() { NocturneMediaControls.sync(); }
@@ -1147,16 +1129,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
   audioEngine.onTrackEnded = (isCrossfadeTrigger = false) => { nextTrack(isCrossfadeTrigger); };
 
-  // Motor nativo: Android pausó por una llamada, otra app o audífonos desconectados (o volvió a sonar)
-  audioEngine.onNativeState = (playing) => {
-    if (playing !== isPlaying && currentTrack()) setPlayingState(playing);
-  };
-  audioEngine.onNativeError = () => {
-    const t = currentTrack();
-    setPlayingState(false);
-    showToast(t ? `No se pudo reproducir "${t.title}".` : 'No se pudo reproducir la pista.');
-  };
-
   audioEngine.onCrossfadeStart = () => {
     dom.crossfadeBadge.classList.add('active');
     dom.crossfadeBadge.textContent = 'FUNDIENDO...';
@@ -1220,9 +1192,9 @@ document.addEventListener('DOMContentLoaded', () => {
   dom.progressTrack.addEventListener('click', (e) => {
     const rect = dom.progressTrack.getBoundingClientRect();
     const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-    const dur = audioEngine.getDuration();
-    if (dur) {
-      audioEngine.seek(pct * dur);
+    const activePlayer = audioEngine.getActivePlayer();
+    if (activePlayer.audio && activePlayer.audio.duration) {
+      audioEngine.seek(pct * activePlayer.audio.duration);
       syncMedia();
     }
   });
@@ -1249,19 +1221,6 @@ document.addEventListener('DOMContentLoaded', () => {
   dom.vizEnabledToggle.addEventListener('change', () => {
     visualizer.enabled = dom.vizEnabledToggle.checked;
   });
-
-  // Motor de audio nativo (solo existe en la app Android con el módulo instalado)
-  (function setupNativeEngineSetting() {
-    const card = document.getElementById('nativeEngineCard');
-    const toggle = document.getElementById('nativeEngineToggle');
-    if (!card || !toggle || !NocturneNative.isAvailable()) return;
-    card.style.display = '';
-    toggle.checked = NocturneNative.isEnabled();
-    toggle.addEventListener('change', () => {
-      NocturneNative.setEnabled(toggle.checked);
-      showToast('Cierra y vuelve a abrir la app para aplicar el cambio.');
-    });
-  })();
 
   dom.eqBass.addEventListener('input', (e) => {
     const val = parseFloat(e.target.value);
@@ -1311,9 +1270,6 @@ document.addEventListener('DOMContentLoaded', () => {
       dom.btnRepeat.classList.remove('active');
       dom.repeatIndicator.textContent = '';
     }
-    // Con el motor nativo la siguiente ya pudo quedar lista: rehacerlo según el modo nuevo
-    if (repeatMode === 'one') audioEngine.clearNext();
-    prefetchedFor = null;
   });
 
   dom.vModeBtns.forEach((btn) => {
@@ -1447,10 +1403,12 @@ document.addEventListener('DOMContentLoaded', () => {
       e.preventDefault(); prevTrack();
     } else if (e.code === 'ArrowRight') {
       e.preventDefault();
-      audioEngine.seek(audioEngine.getCurrentTime() + 5); syncMedia();
+      const p = audioEngine.getActivePlayer();
+      if (p.audio) { audioEngine.seek(p.audio.currentTime + 5); syncMedia(); }
     } else if (e.code === 'ArrowLeft') {
       e.preventDefault();
-      audioEngine.seek(audioEngine.getCurrentTime() - 5); syncMedia();
+      const p = audioEngine.getActivePlayer();
+      if (p.audio) { audioEngine.seek(p.audio.currentTime - 5); syncMedia(); }
     } else if (e.code === 'KeyM') {
       dom.btnMute.click();
     } else if (e.code === 'KeyS') {
