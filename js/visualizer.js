@@ -271,8 +271,7 @@ class Visualizer {
       const bufferLength = freqData.length;
 
       let bassSum = 0;
-      const sr = (this.audioEngine.ctx && this.audioEngine.ctx.sampleRate) || 48000;
-      const bassBins = Math.max(2, Math.min(bufferLength, Math.round(160 / ((sr / 2) / bufferLength)))); // graves: hasta ~160 Hz
+      const bassBins = Math.min(12, bufferLength);
       for (let i = 0; i < bassBins; i++) {
         bassSum += freqData[i];
       }
@@ -374,121 +373,45 @@ class Visualizer {
       else ctx.lineTo(x, y);
     }
     ctx.stroke();
+
+    ctx.fillStyle = 'rgba(248, 250, 252, 0.75)';
+    ctx.font = '600 11px "Plus Jakarta Sans", sans-serif';
+    ctx.letterSpacing = '2px';
+    ctx.textAlign = 'center';
+    ctx.fillText('ELIGE UNA CANCIÓN', w / 2, h / 2 + 35);
     ctx.restore();
-  }
-
-  /**
-   * Reparto de las barras por frecuencia: escala logarítmica de 45 Hz a 14 kHz (como oye el oído).
-   * Así todo el ancho se mueve con la música; antes las barras repartían las frecuencias en línea recta
-   * y casi toda la música caía en las primeras, dejando el otro lado plano.
-   */
-  _bandPlan(barCount, binCount, sampleRate) {
-    const key = `${barCount}|${binCount}|${sampleRate}`;
-    if (this._plan && this._plan.key === key) return this._plan;
-    const FMIN = 45;
-    const FMAX = Math.min(14000, (sampleRate / 2) * 0.95);
-    const binHz = (sampleRate / 2) / binCount;
-    const lo = new Float32Array(barCount);
-    const hi = new Float32Array(barCount);
-    const tilt = new Float32Array(barCount);
-    for (let i = 0; i < barCount; i++) {
-      const f0 = FMIN * Math.pow(FMAX / FMIN, i / barCount);
-      const f1 = FMIN * Math.pow(FMAX / FMIN, (i + 1) / barCount);
-      lo[i] = f0 / binHz;
-      hi[i] = f1 / binHz;
-      // La música pierde ~3 dB por octava hacia los agudos: se compensa para que se vean igual de vivos
-      tilt[i] = Math.max(-3, Math.min(16, 3.2 * Math.log2(Math.sqrt(f0 * f1) / 250)));
-    }
-    this._plan = { key, lo, hi, tilt };
-    return this._plan;
-  }
-
-  /** Valor de una banda: si es más angosta que un punto del analizador se interpola; si no, mezcla de pico y promedio. */
-  _bandValue(data, lo, hi) {
-    const n = data.length;
-    if (hi - lo < 1) {
-      const c = Math.min(n - 1, (lo + hi) / 2);
-      const k = Math.floor(c);
-      const a = data[k] || 0;
-      const b = data[Math.min(n - 1, k + 1)] || 0;
-      return a + (b - a) * (c - k);
-    }
-    const k0 = Math.max(0, Math.floor(lo));
-    const k1 = Math.min(n - 1, Math.ceil(hi));
-    let max = 0;
-    let sum = 0;
-    for (let k = k0; k <= k1; k++) {
-      const v = data[k];
-      if (v > max) max = v;
-      sum += v;
-    }
-    return 0.6 * max + 0.4 * (sum / (k1 - k0 + 1));
   }
 
   drawSpectrumBars(dataArray, bufferLength, w, h) {
     const ctx = this.ctx;
-    const barCount = Math.max(28, Math.min(56, Math.floor(w / 8.5)));
-    const barSpacing = 4;
-    const barWidth = (w - barSpacing * (barCount + 1)) / barCount;
-    const sampleRate = (this.audioEngine.ctx && this.audioEngine.ctx.sampleRate) || 48000;
-    const analyser = this.audioEngine.analyser;
-    const dbRange = (analyser && (analyser.maxDecibels - analyser.minDecibels)) || 70;
-    const plan = this._bandPlan(barCount, bufferLength, sampleRate);
+    const barCount = 44;
+    const barSpacing = 5;
+    const totalBarWidth = (w - (barCount * barSpacing)) / barCount;
+    const step = Math.floor(bufferLength / barCount);
 
-    // Tiempo entre fotogramas: las barras reaccionan igual a 30 que a 60 fps
-    const now = performance.now();
-    const dt = Math.max(8, Math.min(50, now - (this._barsT || now - 16)));
-    this._barsT = now;
-
-    if (!this._bars || this._bars.length !== barCount) {
-      this._bars = new Float32Array(barCount);
-      this._levels = new Float32Array(barCount);
-      this._bandRef = new Float32Array(barCount).fill(0.4);
-      this.peaks = new Array(barCount).fill(0); // 0..1
+    if (this.peaks.length !== barCount) {
+      this.peaks = new Array(barCount).fill(0);
     }
-
-    // 1) Nivel de cada banda (0..1), con compensación de agudos y una compuerta contra el ruido de fondo
-    const FLOOR = 40;
-    const toBytes = 255 / dbRange;
-    let frameMax = 0;
-    for (let i = 0; i < barCount; i++) {
-      const raw = this._bandValue(dataArray, plan.lo[i], plan.hi[i]) + plan.tilt[i] * toBytes;
-      const level = Math.max(0, (raw - FLOOR) / (255 - FLOOR)); // sin tope: así un golpe fuerte no aplana las barras vecinas
-      this._levels[i] = level;
-      if (level > frameMax) frameMax = level;
-    }
-
-    // 2) Ganancia automática: las barras se ajustan al volumen de la canción (suave o fuerte, siempre se ven completas)
-    this._agc = Math.max(frameMax, (this._agc || 0.5) * Math.pow(0.994, dt / 16.7));
-    const gain = Math.min(2.2, 0.9 / Math.max(0.3, this._agc));
-
-    // Cada banda también se ajusta a su propio rango reciente: los agudos suaves se ven tan vivos como los graves
-    const bandDecay = Math.pow(0.997, dt / 16.7);
-    for (let i = 0; i < barCount; i++) {
-      this._bandRef[i] = Math.max(this._levels[i], this._bandRef[i] * bandDecay);
-    }
-
-    // 3) Ataque rápido (golpea con el ritmo) y caída más lenta (se ve fluido)
-    const attack = 1 - Math.pow(1 - 0.75, dt / 16.7);
-    const release = 1 - Math.pow(1 - 0.16, dt / 16.7);
 
     const p = this.palette ? this.palette.primary : '#8b5cf6';
     const s = this.palette ? this.palette.secondary : '#06b6d4';
     const pr = this.palette ? this.palette.primaryRgb : { r: 139, g: 92, b: 246 };
-    const maxH = h * 0.76;
 
     for (let i = 0; i < barCount; i++) {
-      const shared = this._levels[i] * gain;                                   // según el volumen de toda la canción
-      const own = Math.pow(Math.min(1.2, this._levels[i] / Math.max(this._bandRef[i], 0.25)), 1.5) * 0.92; // según el rango de esta frecuencia (más contraste)
-      const target = Math.pow(Math.min(1, shared * 0.45 + own * 0.55), 1.3);   // algo de contraste: lo suave queda bajo, lo fuerte sube
-      const cur = this._bars[i];
-      const next = cur + (target - cur) * (target > cur ? attack : release);
-      this._bars[i] = next;
+      let sum = 0;
+      for (let j = 0; j < step; j++) {
+        sum += dataArray[i * step + j] || 0;
+      }
+      const avg = sum / step;
+      const barHeight = Math.max(5, (avg / 255) * (h * 0.72));
 
-      this.peaks[i] = Math.max(next, this.peaks[i] - dt * 0.0009);
+      if (barHeight > this.peaks[i]) {
+        this.peaks[i] = barHeight;
+      } else {
+        this.peaks[i] = Math.max(0, this.peaks[i] - 1.8);
+      }
 
-      const barHeight = Math.max(4, next * maxH);
-      const x = barSpacing + i * (barWidth + barSpacing);
+      const x = i * (totalBarWidth + barSpacing) + barSpacing;
       const y = h - barHeight;
 
       // Gradiente que armoniza con los colores de la portada
@@ -499,15 +422,15 @@ class Visualizer {
 
       ctx.fillStyle = grad;
       ctx.beginPath();
-      ctx.roundRect(x, y, barWidth, barHeight, [4, 4, 0, 0]);
+      ctx.roundRect(x, y, totalBarWidth, barHeight, [4, 4, 0, 0]);
       ctx.fill();
 
       // Puntas brillantes a juego con el acento secundario
-      const peakY = h - this.peaks[i] * maxH - 6;
+      const peakY = h - this.peaks[i] - 3;
       ctx.fillStyle = '#ffffff';
       ctx.shadowColor = s;
       ctx.shadowBlur = NOCTURNE_LITE ? 0 : 10;
-      ctx.fillRect(x, Math.max(0, peakY), barWidth, 2.5);
+      ctx.fillRect(x, Math.max(0, peakY), totalBarWidth, 2.5);
       ctx.shadowBlur = 0;
     }
   }
@@ -658,3 +581,69 @@ class Visualizer {
 }
 
 window.Visualizer = Visualizer;
+
+/**
+ * MINI VISUALIZADOR (barra inferior)
+ * 5 barritas que reaccionan al audio cuando el reproductor está minimizado.
+ * Solo trabaja mientras suena música, la animación está activada y el reproductor
+ * completo está cerrado (ahí ya dibuja el Visualizer grande), así que casi no gasta batería.
+ */
+class MiniBars {
+  constructor(elementId, audioEngine, visualizer) {
+    this.el = document.getElementById(elementId);
+    this.bars = this.el ? Array.from(this.el.children) : [];
+    this.audioEngine = audioEngine;
+    this.visualizer = visualizer;
+    this.data = null;
+    this.levels = new Array(this.bars.length).fill(0);
+    // Rangos de bins del analizador (fftSize 256 → 128 bins): graves a agudos
+    this.ranges = [[1, 3], [4, 8], [9, 16], [17, 32], [33, 64]];
+    this.lastDraw = 0;
+    this.lastPrimary = null;
+    if (this.el) requestAnimationFrame((t) => this.loop(t));
+  }
+
+  _shouldRun() {
+    const e = this.audioEngine;
+    if (!e || !e._initialized || !e.analyser) return false;
+    if (document.hidden) return false;
+    if (this.visualizer && this.visualizer.enabled === false) return false;
+    if (this.visualizer && this.visualizer.paused === false) return false; // reproductor grande abierto
+    const p = e.getActivePlayer();
+    return !!((p && p.audio && !p.audio.paused) || e.synthActive);
+  }
+
+  loop(now) {
+    requestAnimationFrame((t) => this.loop(t));
+    const run = this._shouldRun();
+    this.el.classList.toggle('on', run);
+    if (!run) return;
+    if (now - this.lastDraw < 33) return; // ~30 fps es suficiente para 5 barras
+    this.lastDraw = now;
+
+    const analyser = this.audioEngine.analyser;
+    if (!this.data || this.data.length !== analyser.frequencyBinCount) {
+      this.data = new Uint8Array(analyser.frequencyBinCount);
+    }
+    analyser.getByteFrequencyData(this.data);
+
+    // Colores de la portada actual
+    const pal = this.visualizer && this.visualizer.palette;
+    if (pal && pal.primary !== this.lastPrimary) {
+      this.lastPrimary = pal.primary;
+      this.el.style.setProperty('--mb-1', pal.secondary);
+      this.el.style.setProperty('--mb-2', pal.primary);
+    }
+
+    for (let i = 0; i < this.bars.length; i++) {
+      const [a, b] = this.ranges[i];
+      let sum = 0;
+      let n = 0;
+      for (let k = a; k <= b && k < this.data.length; k++) { sum += this.data[k]; n++; }
+      const target = n ? Math.min(1, Math.pow(sum / n / 255, 0.85) * 1.15) : 0;
+      // Sube rápido, baja suave
+      this.levels[i] = target > this.levels[i] ? target : this.levels[i] * 0.82 + target * 0.18;
+      this.bars[i].style.transform = `scaleY(${Math.max(0.12, this.levels[i]).toFixed(3)})`;
+    }
+  }
+}
