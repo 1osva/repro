@@ -252,10 +252,7 @@ class Visualizer {
     const h = this.height;
 
     const analyser = this.audioEngine.analyser;
-    const isPlaying = this.audioEngine._initialized && (
-      (this.audioEngine.getActivePlayer().audio && !this.audioEngine.getActivePlayer().audio.paused) ||
-      this.audioEngine.synthActive
-    );
+    const isPlaying = this.audioEngine.isAudioPlaying();
 
     const now = performance.now();
     let snap = null;
@@ -287,7 +284,8 @@ class Visualizer {
 
     if (!snap) {
       if (!this.enabled && isPlaying) return; // animación apagada: queda solo la portada
-      this.drawIdleState(w, h);
+      // Motor nativo: suena, pero todavía no hay espectro que dibujar
+      this.drawIdleState(w, h, isPlaying && !analyser);
       return;
     }
 
@@ -357,7 +355,7 @@ class Visualizer {
     }
   }
 
-  drawIdleState(w, h) {
+  drawIdleState(w, h, nativeNoSpectrum = false) {
     const ctx = this.ctx;
     this.idlePhase += 0.02;
 
@@ -378,7 +376,7 @@ class Visualizer {
     ctx.font = '600 11px "Plus Jakarta Sans", sans-serif';
     ctx.letterSpacing = '2px';
     ctx.textAlign = 'center';
-    ctx.fillText('ELIGE UNA CANCIÓN', w / 2, h / 2 + 35);
+    ctx.fillText(nativeNoSpectrum ? 'MOTOR NATIVO · SIN ESPECTRO AÚN' : 'ELIGE UNA CANCIÓN', w / 2, h / 2 + 35);
     ctx.restore();
   }
 
@@ -605,12 +603,11 @@ class MiniBars {
 
   _shouldRun() {
     const e = this.audioEngine;
-    if (!e || !e._initialized || !e.analyser) return false;
+    if (!e || !e._initialized || !e.analyser || e.native) return false;
     if (document.hidden) return false;
     if (this.visualizer && this.visualizer.enabled === false) return false;
     if (this.visualizer && this.visualizer.paused === false) return false; // reproductor grande abierto
-    const p = e.getActivePlayer();
-    return !!((p && p.audio && !p.audio.paused) || e.synthActive);
+    return e.isAudioPlaying();
   }
 
   loop(now) {

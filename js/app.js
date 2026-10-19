@@ -9,8 +9,9 @@
  */
 
 document.addEventListener('DOMContentLoaded', () => {
-  const audioEngine = new AudioEngine();
+  const audioEngine = NocturneNative.createEngine();
   const visualizer = new Visualizer('visualizerCanvas', audioEngine);
+  const miniBars = new MiniBars('miniBars', audioEngine, visualizer);
 
   // ---------------------------------------------------------------------------
   // Estado
@@ -31,20 +32,6 @@ document.addEventListener('DOMContentLoaded', () => {
   let libFilter = '';
   let prefetchedFor = null; // canción actual para la que ya se precargó la siguiente
   let mediaDurationFor = null; // canción cuya duración ya se envió a la notificación
-  let restorePending = null; // { pos } canción recordada de la última vez, lista para reanudar con Play
-  let sessionRestored = false;
-  let scrubbing = false; // la persona está deslizando la barra de tiempo
-  let liteMode = false;  // modo ligero: la interfaz se aligera sola si se traba mientras suena música
-  let lastLibrarySig = '';  // huella de la última lista mostrada (de la caché o de la búsqueda)
-  let lastScanned = [];     // esa lista tal como llegó, sin etiquetas añadidas después
-  let lastQueueJson = '';
-  // Selección de varias canciones (se activa manteniendo presionada una)
-  let selecting = false;
-  let selectionContainer = null; // lista donde se empezó a seleccionar
-  let suppressClick = false;     // evita que soltar la pulsación larga reproduzca la canción
-  const selectedMap = new Map(); // id → canción
-  const SESSION_KEY = 'nocturne.session.v1'; // última canción y segundo en que se quedó
-  const QUEUE_KEY = 'nocturne.queue.v1';     // orden de la cola (para conservar el modo aleatorio)
 
   const $ = (id) => document.getElementById(id);
   const dom = {
@@ -70,9 +57,9 @@ document.addEventListener('DOMContentLoaded', () => {
     eqBass: $('eqBass'), eqMid: $('eqMid'), eqTreble: $('eqTreble'), bassVal: $('bassVal'),
     volumeSlider: $('volumeSlider'), btnMute: $('btnMute'), volIconHigh: $('volIconHigh'), volIconMuted: $('volIconMuted'),
 
-    dropZone: $('queueList'), fileInput: $('fileInput'),
+    dropZone: $('dropZone'), fileInput: $('fileInput'),
     queueList: $('queueList'), queueCounter: $('queueCounter'), libSearch: $('libSearch'),
-    
+    btnShuffleNow: $('btnShuffleNow'), btnClearQueue: $('btnClearQueue'), btnLoadDemos: $('btnLoadDemos'),
 
     listsOverview: $('listsOverview'), listCards: $('listCards'), btnNewList: $('btnNewList'),
     listDetail: $('listDetail'), listDetailName: $('listDetailName'), listDetailCount: $('listDetailCount'),
@@ -83,10 +70,7 @@ document.addEventListener('DOMContentLoaded', () => {
     toast: $('nocturneToast'),
     app: $('app'), player: $('screenHome'), btnPlayerClose: $('btnPlayerClose'), btnMiniNext: $('btnMiniNext'),
     miniProgressFill: $('miniProgressFill'), btnSettingsBack: $('btnSettingsBack'),
-    aboutBuild: $('aboutBuild'), aboutMusic: $('aboutMusic'), selectBar: $('selectBar'), selCount: $('selCount'), btnSelCancel: $('btnSelCancel'), btnSelAll: $('btnSelAll'),
-    btnSelShare: $('btnSelShare'), btnSelFav: $('btnSelFav'), btnSelDelete: $('btnSelDelete'),
-    audioDiagLog: $('audioDiagLog'), btnDiagRefresh: $('btnDiagRefresh'), btnDiagReset: $('btnDiagReset'), btnDiagCopy: $('btnDiagCopy'),
-    aboutNotif: $('aboutNotif'), aboutCovers: $('aboutCovers'), aboutBackground: $('aboutBackground'),
+    aboutBuild: $('aboutBuild'), aboutMusic: $('aboutMusic'), aboutNotif: $('aboutNotif'),
     vizEnabledToggle: $('vizEnabledToggle'),
     tabs: document.querySelectorAll('.main-tab'),
     screens: document.querySelectorAll('.screen'),
@@ -318,9 +302,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
   let playRequestId = 0;
 
-  async function playTrackAtIndex(index, forceImmediate = false, startAt = 0) {
+  async function playTrackAtIndex(index, forceImmediate = false) {
     if (index < 0 || index >= playlist.length) return;
-    restorePending = null; // ya se eligió qué sonar: la canción recordada deja de estar "pendiente"
 
     const requestId = ++playRequestId;
     currentTrackIndex = index;
@@ -328,7 +311,9 @@ document.addEventListener('DOMContentLoaded', () => {
     markActiveRows();
 
     // Las pistas de la biblioteca del teléfono se leen justo antes de sonar
-    if (NocturneLibrary.needsResolve(track)) {
+    // (con el motor nativo no hace falta: Android las reproduce directamente)
+    const nativeTrack = audioEngine.usesNative(track);
+    if (!nativeTrack && NocturneLibrary.needsResolve(track)) {
       dom.barTitle.textContent = track.title;
       dom.barArtist.textContent = 'Cargando…';
       try {
@@ -349,30 +334,12 @@ document.addEventListener('DOMContentLoaded', () => {
     prefetchedFor = null;
     mediaDurationFor = null;
 
-    // Reanudar donde se quedó la última vez: se salta a ese segundo en cuanto el archivo está listo
-    if (startAt > 1) {
-      const player = audioEngine.getActivePlayer();
-      const jump = () => {
-        if (player.track !== track) return; // mientras tanto se eligió otra canción
-        const a = player.audio;
-        if (a && isFinite(a.duration) && startAt < a.duration - 1) {
-          try { a.currentTime = startAt; } catch (e) { /* sin salto: empieza desde el principio */ }
-        }
-      };
-      if (player.audio.readyState >= 1 && player.track === track && player.audio.src === track.url) jump();
-      else player.audio.addEventListener('loadedmetadata', jump, { once: true });
-    }
-    saveQueue();
-    saveSession(startAt);
-    logTrackDiag(track);
-
     // 2) Texto y estado al instante (es barato)…
     dom.currentTitle.textContent = track.title;
     dom.currentArtist.textContent = artistLabel(track);
     dom.barTitle.textContent = track.title;
     dom.barArtist.textContent = artistLabel(track);
     setPlayingState(true);
-    askBatteryExemptionOnce();
 
     // 3) …y lo pesado (portada, colores, filas, memoria) un instante después, ya con el audio sonando
     setTimeout(() => {
@@ -381,6 +348,19 @@ document.addEventListener('DOMContentLoaded', () => {
       refreshTrackRows(track);
       manageLibraryMemory(playlist.indexOf(track));
     }, 350);
+
+    // Motor nativo: portada y etiquetas se leen aparte, ya con la música sonando
+    if (nativeTrack && NocturneLibrary.needsMetadata(track)) {
+      setTimeout(() => {
+        if (requestId !== playRequestId) return;
+        NocturneLibrary.resolveMetadata(track).then(() => {
+          if (requestId !== playRequestId) return;
+          updateNowPlayingUI(track);
+          refreshTrackRows(track);
+          NocturneMediaControls.refreshCover();
+        }).catch((e) => console.warn('No se pudieron leer las etiquetas:', e));
+      }, 700);
+    }
   }
 
   /** Libera la memoria de las canciones del teléfono que ya no están cerca de la actual. */
@@ -412,7 +392,13 @@ document.addEventListener('DOMContentLoaded', () => {
     const current = currentTrack();
     const next = peekNextTrack();
     if (!current || !next || prefetchedFor === current) return;
+    if (repeatMode === 'one') { audioEngine.clearNext(); return; }
     prefetchedFor = current;
+    // Motor nativo: basta entregar el content:// (sin leer el archivo): pasa a ella sin huecos
+    if (audioEngine.native && audioEngine.usesNative(next)) {
+      audioEngine.preloadTrack(next);
+      return;
+    }
     try {
       await NocturneLibrary.resolve(next);
       if (currentTrack() === current && !audioEngine.isCrossfading) audioEngine.preloadTrack(next);
@@ -443,10 +429,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function prevTrack() {
     if (playlist.length === 0) return;
-    const activePlayer = audioEngine.getActivePlayer();
-
     // Si pasaron más de 3 segundos, reiniciar la pista actual
-    if (activePlayer.audio && activePlayer.audio.currentTime > 3) {
+    if (audioEngine.getCurrentTime() > 3) {
       audioEngine.seek(0);
       syncMedia();
       return;
@@ -465,7 +449,6 @@ document.addEventListener('DOMContentLoaded', () => {
     dom.miniPauseIcon.style.display = playing ? 'block' : 'none';
     dom.engineStatusText.textContent = playing ? 'En reproducción' : 'Pausa';
     syncMedia();
-    if (!playing) saveSession();
   }
 
   function togglePlayPause() {
@@ -484,11 +467,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
     if (currentTrackIndex === -1) {
       playTrackAtIndex(0);
-      return;
-    }
-
-    if (restorePending && currentTrack()) {
-      playTrackAtIndex(currentTrackIndex, true, restorePending.pos);
       return;
     }
 
@@ -514,11 +492,9 @@ document.addEventListener('DOMContentLoaded', () => {
   NocturneMediaControls.setProvider(() => {
     const t = currentTrack();
     if (!t) return null;
-    // Durante un crossfade la canción nueva está en el otro reproductor: buscar el que tiene ESTA canción
-    const p = (audioEngine.players || []).find(pl => pl.track && pl.track.id === t.id) || audioEngine.getActivePlayer();
-    const a = p && p.audio;
-    const dur = a && isFinite(a.duration) && a.duration > 0 ? a.duration : (t.duration || 0);
-    return { track: t, playing: isPlaying, position: a ? (a.currentTime || 0) : 0, duration: dur };
+    // Durante un crossfade la canción nueva está en otro reproductor: el motor sabe cuál tiene ESTA canción
+    const info = audioEngine.getPlaybackInfo(t);
+    return { track: t, playing: isPlaying, position: info.position, duration: info.duration || t.duration || 0 };
   });
 
   function syncMedia() { NocturneMediaControls.sync(); }
@@ -571,10 +547,9 @@ document.addEventListener('DOMContentLoaded', () => {
     if (currentTrack()) return;
     const n = library.length;
     const info = n ? plural(n, 'canción lista', 'canciones listas') : 'Busca tu música para empezar';
-    // Sin canción elegida no se muestra título (un espacio fijo mantiene la altura y evita saltos al elegir una)
-    dom.currentTitle.textContent = '\u00A0';
+    dom.currentTitle.textContent = 'Elige una canción';
     dom.currentArtist.textContent = n ? info : 'Nocturne Sound Engine';
-    dom.barTitle.textContent = '\u00A0';
+    dom.barTitle.textContent = 'Elige una canción';
     dom.barArtist.textContent = info;
   }
 
@@ -584,231 +559,49 @@ document.addEventListener('DOMContentLoaded', () => {
     dom.btnFavorite.setAttribute('aria-pressed', String(fav));
   }
 
-  // ---------------------------------------------------------------------------
-  // Color de la portada → colores de la interfaz
-  // - Reproductor, barra de tiempo, botones y mini reproductor: color completo (--accent-*).
-  // - Pantallas de listas/biblioteca/ajustes: la misma idea pero más ligera (--soft-*).
-  // Los colores se ajustan para que siempre se lean bien sobre el fondo oscuro.
-  // ---------------------------------------------------------------------------
-  const THEME_VARS = [
-    '--accent-purple', '--accent-cyan', '--accent-purple-glow', '--accent-cyan-glow',
-    '--soft-purple', '--soft-cyan', '--soft-purple-glow', '--soft-cyan-glow'
-  ];
-  const DEFAULT_PRIMARY = { r: 139, g: 92, b: 246 };   // paleta de reposo del visualizador
-  const DEFAULT_SECONDARY = { r: 6, g: 182, b: 212 };
-  const sameRgb = (a, b) => a.r === b.r && a.g === b.g && a.b === b.b;
-  const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
-
-  function rgbToHsl({ r, g, b }) {
-    r /= 255; g /= 255; b /= 255;
-    const max = Math.max(r, g, b), min = Math.min(r, g, b);
-    const l = (max + min) / 2;
-    let h = 0, sat = 0;
-    if (max !== min) {
-      const d = max - min;
-      sat = l > 0.5 ? d / (2 - max - min) : d / (max + min);
-      if (max === r) h = ((g - b) / d + (g < b ? 6 : 0));
-      else if (max === g) h = (b - r) / d + 2;
-      else h = (r - g) / d + 4;
-      h *= 60;
-    }
-    return { h, s: sat, l };
-  }
-
-  function hslToRgb(h, sat, l) {
-    const c = (1 - Math.abs(2 * l - 1)) * sat;
-    const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
-    const m = l - c / 2;
-    let r = 0, g = 0, b = 0;
-    if (h < 60) { r = c; g = x; } else if (h < 120) { r = x; g = c; } else if (h < 180) { g = c; b = x; }
-    else if (h < 240) { g = x; b = c; } else if (h < 300) { r = x; b = c; } else { r = c; b = x; }
-    return { r: Math.round((r + m) * 255), g: Math.round((g + m) * 255), b: Math.round((b + m) * 255) };
-  }
-
-  function relLuminance({ r, g, b }) {
-    const f = (v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); };
-    return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b);
-  }
-
-  /** Lleva un color de la portada a un tono vivo y legible sobre el fondo oscuro (contraste ≥ 4.5). */
-  function readableAccent(rgb, soft) {
-    const hsl = rgbToHsl(rgb);
-    const sat = soft ? clamp(hsl.s * 0.55, 0.25, 0.60) : clamp(hsl.s, 0.55, 0.95);
-    let l = soft ? clamp(hsl.l, 0.70, 0.80) : clamp(hsl.l, 0.60, 0.72);
-    let out = hslToRgb(hsl.h, sat, l);
-    while (relLuminance(out) < 0.21 && l < 0.92) { l += 0.02; out = hslToRgb(hsl.h, sat, l); }
-    return out;
-  }
-
-  const rgbCss = (c) => `rgb(${c.r}, ${c.g}, ${c.b})`;
-  const rgbaCss = (c, a) => `rgba(${c.r}, ${c.g}, ${c.b}, ${a})`;
-
-  /** Aplica los colores de la portada a la interfaz. Devuelve los colores usados, o null si se usa la paleta de reposo. */
-  function applyCoverTheme(palette) {
-    const root = document.documentElement.style;
-    const p = palette.primaryRgb;
-    if (sameRgb(p, DEFAULT_PRIMARY)) { // sin portada: colores originales
-      THEME_VARS.forEach(v => root.removeProperty(v));
-      return null;
-    }
-    let sec = palette.secondaryRgb;
-    if (sameRgb(sec, DEFAULT_SECONDARY)) { // la portada no tiene un segundo color: uno vecino al principal
-      const h = rgbToHsl(p);
-      sec = hslToRgb((h.h + 35) % 360, h.s, h.l);
-    }
-    const full = [readableAccent(p, false), readableAccent(sec, false)];
-    const soft = [readableAccent(p, true), readableAccent(sec, true)];
-    root.setProperty('--accent-purple', rgbCss(full[0]));
-    root.setProperty('--accent-cyan', rgbCss(full[1]));
-    root.setProperty('--accent-purple-glow', rgbaCss(full[0], 0.45));
-    root.setProperty('--accent-cyan-glow', rgbaCss(full[1], 0.45));
-    root.setProperty('--soft-purple', rgbCss(soft[0]));
-    root.setProperty('--soft-cyan', rgbCss(soft[1]));
-    root.setProperty('--soft-purple-glow', rgbaCss(soft[0], 0.22));
-    root.setProperty('--soft-cyan-glow', rgbaCss(soft[1], 0.22));
-    return { full, soft };
-  }
-
+  // La portada tiñe suavemente el fondo; los colores de la interfaz (iconos, botones)
+  // se mantienen fijos para que siempre haya buen contraste, sea cual sea la portada.
   visualizer.onPaletteExtracted = (palette) => {
-    const theme = applyCoverTheme(palette);
-    let playerTint;
-    let listTint;
-    if (theme) {
-      const [a, b] = theme.full;
-      playerTint = `
-        radial-gradient(circle at 18% 16%, ${rgbaCss(a, 0.32)} 0%, transparent 56%),
-        radial-gradient(circle at 85% 82%, ${rgbaCss(b, 0.24)} 0%, transparent 58%)`;
-      listTint = `
-        radial-gradient(circle at 18% 18%, ${rgbaCss(a, 0.14)} 0%, transparent 52%),
-        radial-gradient(circle at 85% 80%, ${rgbaCss(b, 0.10)} 0%, transparent 55%)`;
-    } else {
-      const p = palette.primaryRgb;
-      const s = palette.secondaryRgb;
-      playerTint = listTint = `
-        radial-gradient(circle at 18% 18%, rgba(${p.r}, ${p.g}, ${p.b}, 0.13) 0%, transparent 52%),
-        radial-gradient(circle at 85% 80%, rgba(${s.r}, ${s.g}, ${s.b}, 0.10) 0%, transparent 55%),
-        radial-gradient(circle at 20% 15%, rgba(124, 92, 255, 0.16) 0%, transparent 50%)`;
-    }
-    dom.ambientBg.style.background = `${listTint}, radial-gradient(circle at 50% 50%, #0c0a22 0%, #070714 100%)`;
-    dom.player.style.background = `${playerTint}, #070714`;
+    const p = palette.primaryRgb;
+    const s = palette.secondaryRgb;
+    const tint = `
+      radial-gradient(circle at 18% 18%, rgba(${p.r}, ${p.g}, ${p.b}, 0.13) 0%, transparent 52%),
+      radial-gradient(circle at 85% 80%, rgba(${s.r}, ${s.g}, ${s.b}, 0.10) 0%, transparent 55%),
+      radial-gradient(circle at 20% 15%, rgba(124, 92, 255, 0.16) 0%, transparent 50%)`;
+    dom.ambientBg.style.background = `${tint}, radial-gradient(circle at 50% 50%, #0c0a22 0%, #070714 100%)`;
+    dom.player.style.background = `${tint}, #070714`;
   };
 
   // ---------------------------------------------------------------------------
   // Listas de canciones (biblioteca y detalle de lista)
   // ---------------------------------------------------------------------------
-  const CHECK_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>';
-
   function rowHtml(t, idx) {
-    const img = t.cover || t.thumb;
-    const cover = img ? ` style="background-image:url('${escapeHtml(img)}')"` : '';
+    const cover = t.cover ? ` style="background-image:url('${escapeHtml(t.cover)}')"` : '';
     return `
-      <div class="track-row${selectedMap.has(t.id) ? ' selected' : ''}" data-index="${idx}" data-id="${escapeHtml(t.id)}">
-        <div class="track-row-cover"${cover}>${img ? '' : '♪'}</div>
+      <div class="track-row" data-index="${idx}" data-id="${escapeHtml(t.id)}">
+        <div class="track-row-cover"${cover}>${t.cover ? '' : '♪'}</div>
         <div class="track-row-info">
           <div class="track-row-title">${escapeHtml(t.title)}</div>
           <div class="track-row-artist">${escapeHtml(artistLabel(t))}</div>
         </div>
         <div class="track-row-dur">${t.duration ? formatTime(t.duration) : ''}</div>
         <button class="icon-btn row-menu" type="button" aria-label="Más opciones">${ICON.dots}</button>
-        <span class="sel-circle" aria-hidden="true">${CHECK_SVG}</span>
       </div>`;
   }
 
-  // Portadas de la biblioteca del teléfono: se piden solo para las filas que aparecen en pantalla
-  const coverObserver = ('IntersectionObserver' in window)
-    ? new IntersectionObserver((entries) => {
-        entries.forEach((entry) => {
-          if (!entry.isIntersecting) return;
-          const row = entry.target;
-          coverObserver.unobserve(row);
-          const tracks = row.parentElement && row.parentElement._tracks;
-          const track = tracks && tracks[parseInt(row.dataset.index, 10)];
-          if (track) NocturneLibrary.requestThumb(track, onThumbReady, row, () => row.isConnected && nearViewport(row));
-        });
-      }, { rootMargin: '240px 0px' })
-    : null;
-
-  const nearViewport = (row) => {
-    const r = row.getBoundingClientRect();
-    return r.bottom > -320 && r.top < window.innerHeight + 320;
-  };
-
-  /** Pone la portada recién leída solo en su fila (sin recorrer las miles de filas de la lista). */
-  function onThumbReady(track, row) {
-    const img = track.cover || track.thumb;
-    if (row && row.isConnected && row.dataset.id === String(track.id) && img) {
-      const cover = row.querySelector('.track-row-cover');
-      if (cover) { cover.style.backgroundImage = `url('${img}')`; cover.textContent = ''; }
-      return;
-    }
-    refreshTrackRows(track);
-  }
-
-  function observeCovers(container) {
-    if (!coverObserver || !NocturneLibrary.thumbsSupported()) return;
-    const tracks = container._tracks || [];
-    container.querySelectorAll('.track-row').forEach((row) => {
-      const track = tracks[parseInt(row.dataset.index, 10)];
-      if (NocturneLibrary.needsThumb(track)) coverObserver.observe(row);
-    });
-  }
-
   function renderTrackList(container, tracks, emptyHtml) {
-    if (coverObserver) container.querySelectorAll('.track-row').forEach(r => coverObserver.unobserve(r));
     container._tracks = tracks;
     container.innerHTML = tracks.length ? tracks.map(rowHtml).join('') : (emptyHtml || '');
     markActiveRows();
-    observeCovers(container);
-  }
-
-  function trackOfRow(container, row) {
-    const tracks = container._tracks || [];
-    return tracks[parseInt(row.dataset.index, 10)] || null;
   }
 
   function bindTrackList(container, getSource) {
-    // Mantener presionada una canción: empieza la selección de varias
-    let pressTimer = null;
-    let pressX = 0;
-    let pressY = 0;
-    const cancelPress = () => { if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; } };
-
-    container.addEventListener('pointerdown', (e) => {
-      if (selecting || (e.pointerType === 'mouse' && e.button !== 0)) return;
-      const row = e.target.closest('.track-row');
-      if (!row || !container.contains(row) || e.target.closest('.row-menu')) return;
-      pressX = e.clientX;
-      pressY = e.clientY;
-      cancelPress();
-      pressTimer = setTimeout(() => {
-        pressTimer = null;
-        const t = trackOfRow(container, row);
-        if (!t) return;
-        suppressClick = true; // al soltar el dedo llega un "click": se ignora
-        selectionContainer = container;
-        enterSelection();
-        toggleSelect(t);
-        if (navigator.vibrate) { try { navigator.vibrate(14); } catch (err) { /* sin vibración */ } }
-      }, 450);
-    });
-    container.addEventListener('pointermove', (e) => {
-      if (pressTimer && (Math.abs(e.clientX - pressX) > 10 || Math.abs(e.clientY - pressY) > 10)) cancelPress();
-    });
-    ['pointerup', 'pointercancel', 'pointerleave'].forEach(type => container.addEventListener(type, cancelPress));
-    // El "click" llega justo después de soltar; pasado un instante ya no hay nada que ignorar
-    ['pointerup', 'pointercancel'].forEach(type => container.addEventListener(type, () => {
-      if (suppressClick) setTimeout(() => { suppressClick = false; }, 400);
-    }));
-    container.addEventListener('contextmenu', (e) => e.preventDefault());
-
     container.addEventListener('click', (e) => {
-      if (suppressClick) { suppressClick = false; return; }
       const row = e.target.closest('.track-row');
       if (!row || !container.contains(row)) return;
       const tracks = container._tracks || [];
       const t = tracks[parseInt(row.dataset.index, 10)];
       if (!t) return;
-      if (selecting) { toggleSelect(t); return; }
       if (e.target.closest('.row-menu')) {
         openTrackMenu(t, { tracks, source: getSource() });
         return;
@@ -837,9 +630,8 @@ document.addEventListener('DOMContentLoaded', () => {
       const row = c.querySelector(`.track-row[data-id="${id}"]`);
       if (!row) return;
       const cover = row.querySelector('.track-row-cover');
-      const img = track.cover || track.thumb;
-      if (cover && img) {
-        cover.style.backgroundImage = `url('${img}')`;
+      if (cover && track.cover) {
+        cover.style.backgroundImage = `url('${track.cover}')`;
         cover.textContent = '';
       }
       const artist = row.querySelector('.track-row-artist');
@@ -866,9 +658,9 @@ document.addEventListener('DOMContentLoaded', () => {
       if (status === 'ready') {
         empty = '<div class="empty-state">Aún no hay música.<br>Pulsa <strong>Buscar música</strong> para traer las canciones de tu teléfono.</div>';
       } else if (status === 'missing-plugin') {
-        empty = '<div class="empty-state"><strong>Este APK no incluye la búsqueda de música.</strong><br>Vuelve a compilarlo con la última versión. Mientras tanto, usa el menú ⋮ → <strong>Agregar archivos de audio</strong>.</div>';
+        empty = '<div class="empty-state"><strong>Este APK no incluye la búsqueda de música.</strong><br>Vuelve a compilarlo con la última versión. Mientras tanto, usa <strong>Agregar archivos</strong>.</div>';
       } else {
-        empty = '<div class="empty-state">Aún no hay música.<br>Usa el menú ⋮ → <strong>Agregar archivos de audio</strong> para empezar.</div>';
+        empty = '<div class="empty-state">Aún no hay música.<br>Usa <strong>Agregar archivos</strong> o carga las <strong>Demos</strong> para empezar.</div>';
       }
     } else if (shown.length === 0) {
       empty = `<div class="empty-state">Sin resultados para <strong>«${escapeHtml(libFilter.trim())}»</strong>.</div>`;
@@ -1138,203 +930,7 @@ document.addEventListener('DOMContentLoaded', () => {
         p.textContent = 'Solo las canciones de la biblioteca del teléfono se pueden guardar en listas.';
         body.appendChild(p);
       }
-
-      if (track.contentUri && NocturneLibrary.canDelete()) {
-        sheetItem(body, {
-          icon: ICON.trash, label: 'Eliminar del teléfono…', danger: true,
-          onClick: () => confirmDeleteTrack(track)
-        });
-      }
     });
-  }
-
-  // ----- Eliminar canciones del teléfono -----
-  function confirmDeleteTrack(track) { confirmDeleteTracks([track]); }
-
-  function confirmDeleteTracks(tracks, onDone) {
-    const one = tracks.length === 1;
-    confirmSheet(
-      one ? `¿Eliminar «${tracks[0].title}»?` : `¿Eliminar ${tracks.length} canciones?`,
-      `Se borrar${one ? 'á el archivo' : 'án los archivos'} de tu teléfono y no se puede deshacer. Android te pedirá confirmar.`,
-      'Eliminar',
-      async () => {
-        const ok = await deleteTracksFromPhone(tracks);
-        if (ok && onDone) onDone();
-      }
-    );
-  }
-
-  async function deleteTracksFromPhone(tracks) {
-    try {
-      const { deleted, cancelled } = await NocturneLibrary.deleteTracks(tracks);
-      if (cancelled) { showToast('No se eliminó nada.'); return false; }
-      const gone = tracks.filter(t => deleted.includes(t.contentUri));
-      if (!gone.length) { showToast('No se pudo eliminar la canción.'); return false; }
-      removeTracksFromApp(gone);
-      showToast(gone.length === 1 ? 'Canción eliminada.' : `${gone.length} canciones eliminadas.`);
-      return true;
-    } catch (e) {
-      console.warn('No se pudo eliminar:', e);
-      const msg = (e && e.message) || '';
-      if (e && e.code === 'UNSUPPORTED') showToast('Para eliminar desde la app se necesita Android 10 o superior.');
-      else if (e && e.code === 'PERMISSION_DENIED') showToast('Falta el permiso de música para eliminar.');
-      else showToast(/curso/i.test(msg) ? 'Espera: ya hay una eliminación en curso.' : 'No se pudo eliminar la canción.');
-      return false;
-    }
-  }
-
-  // ----- Selección de varias canciones: Compartir · Favoritos · Eliminar -----
-  function selectedTracks() { return Array.from(selectedMap.values()); }
-
-  function syncSelectedRows() {
-    [dom.queueList, dom.listTracks].forEach((c) => {
-      c.querySelectorAll('.track-row').forEach(r => r.classList.toggle('selected', selectedMap.has(r.dataset.id)));
-    });
-  }
-
-  function updateSelectionUI() {
-    const n = selectedMap.size;
-    dom.selCount.textContent = n === 1 ? '1 seleccionada' : `${n} seleccionadas`;
-    const savable = selectedTracks().filter(t => NocturneLists.isSavable(t));
-    dom.btnSelFav.classList.toggle('active', savable.length > 0 && savable.every(t => NocturneLists.isFavorite(t)));
-    const total = selectionContainer && selectionContainer._tracks ? selectionContainer._tracks.length : 0;
-    dom.btnSelAll.textContent = total > 0 && n >= total ? 'Ninguna' : 'Todo';
-  }
-
-  function enterSelection() {
-    if (selecting) return;
-    selecting = true;
-    document.body.classList.add('selecting');
-    dom.selectBar.hidden = false;
-    dom.btnSelShare.hidden = !NocturneLibrary.canShare();
-    dom.btnSelDelete.hidden = !NocturneLibrary.canDelete();
-    pushLayer(leaveSelection); // el botón Atrás de Android también sale de la selección
-    updateSelectionUI();
-  }
-
-  function leaveSelection() {
-    selecting = false;
-    selectionContainer = null;
-    selectedMap.clear();
-    document.body.classList.remove('selecting');
-    dom.selectBar.hidden = true;
-    syncSelectedRows();
-  }
-
-  function toggleSelect(t) {
-    if (selectedMap.has(t.id)) selectedMap.delete(t.id);
-    else selectedMap.set(t.id, t);
-    syncSelectedRows();
-    if (selectedMap.size === 0) { popLayer(); return; } // sin nada marcado se sale de la selección
-    updateSelectionUI();
-  }
-
-  function finishSelection() { if (selecting) popLayer(); }
-
-  dom.btnSelCancel.addEventListener('click', finishSelection);
-
-  dom.btnSelAll.addEventListener('click', () => {
-    const all = (selectionContainer && selectionContainer._tracks) || [];
-    if (!all.length) return;
-    if (selectedMap.size >= all.length) { popLayer(); return; }
-    all.forEach(t => selectedMap.set(t.id, t));
-    syncSelectedRows();
-    updateSelectionUI();
-  });
-
-  dom.btnSelFav.addEventListener('click', () => {
-    const tracks = selectedTracks().filter(t => NocturneLists.isSavable(t));
-    if (!tracks.length) { showToast('Solo las canciones del teléfono se pueden guardar en Favoritas.'); return; }
-    if (tracks.every(t => NocturneLists.isFavorite(t))) {
-      tracks.forEach(t => NocturneLists.removeTrack(NocturneLists.FAV_ID, t));
-      showToast(tracks.length === 1 ? 'Quitada de Favoritas.' : `${tracks.length} quitadas de Favoritas.`);
-    } else {
-      const added = NocturneLists.addTracks(NocturneLists.FAV_ID, tracks);
-      showToast(added === 1 ? 'Agregada a Favoritas.' : `${added} agregadas a Favoritas.`);
-    }
-    updateFavoriteButton(currentTrack());
-    renderListCards();
-    if (currentListId) renderListDetail();
-    finishSelection();
-  });
-
-  dom.btnSelShare.addEventListener('click', async () => {
-    const tracks = selectedTracks().filter(t => t.contentUri);
-    if (!tracks.length) { showToast('Solo las canciones del teléfono se pueden compartir.'); return; }
-    try {
-      await NocturneLibrary.shareTracks(tracks);
-      finishSelection();
-    } catch (e) {
-      console.warn('No se pudo compartir:', e);
-      showToast('No se pudo abrir el menú de compartir.');
-    }
-  });
-
-  dom.btnSelDelete.addEventListener('click', () => {
-    const tracks = selectedTracks().filter(t => t.contentUri);
-    if (!tracks.length) { showToast('Solo las canciones del teléfono se pueden eliminar.'); return; }
-    confirmDeleteTracks(tracks, finishSelection);
-  });
-
-  /** Quita de la app (biblioteca, cola, listas y memoria del reproductor) canciones que ya no existen en el teléfono. */
-  function removeTracksFromApp(gone) {
-    const goneUris = new Set(gone.map(t => t.contentUri));
-    const isGone = (t) => !!(t && t.contentUri && goneUris.has(t.contentUri));
-    const cur = currentTrack();
-    const removingCurrent = isGone(cur);
-    const wasPlaying = isPlaying;
-
-    // Si se borra la que suena, se sigue con la siguiente de la cola que no se haya borrado
-    const follow = removingCurrent ? (playlist.slice(currentTrackIndex + 1).find(t => !isGone(t)) || null) : null;
-
-    library = library.filter(t => !isGone(t));
-    playlist = playlist.filter(t => !isGone(t));
-    currentTrackIndex = removingCurrent ? -1 : (cur ? playlist.indexOf(cur) : -1);
-
-    if (removingCurrent) {
-      restorePending = null;
-      audioEngine.stopAllAudio();
-      NocturneMediaControls.stop();
-      setPlayingState(false);
-      visualizer.setCover(null);
-      dom.currentCover.style.backgroundImage = 'none';
-      dom.currentCover.innerHTML = DEFAULT_COVER_HTML;
-      dom.barCover.style.backgroundImage = 'none';
-      dom.barCover.innerHTML = DEFAULT_BAR_COVER_HTML;
-      dom.progressFill.style.width = '0%';
-      dom.progressHandle.style.left = '0%';
-      dom.miniProgressFill.style.width = '0%';
-      dom.currentTime.textContent = formatTime(0);
-      dom.durationTime.textContent = formatTime(0);
-    }
-    gone.forEach(t => NocturneLibrary.release(t));
-
-    // La lista guardada para la próxima apertura ya no debe incluirlas
-    lastScanned = lastScanned.filter(t => !isGone(t));
-    lastLibrarySig = NocturneLibrary.signature(lastScanned);
-    NocturneLibrary.saveCache(lastScanned);
-
-    // Fuera de Favoritas y de las demás listas
-    NocturneLists.all().forEach(l => gone.forEach(t => NocturneLists.removeTrack(l.id, t)));
-
-    // La memoria del reproductor no debe apuntar a una canción borrada
-    const saved = readJson(SESSION_KEY);
-    if (saved && gone.some(t => String(t.id) === String(saved.id))) {
-      try { localStorage.removeItem(SESSION_KEY); } catch (e) { /* sin almacenamiento */ }
-    }
-    if (playlist.length) saveQueue();
-
-    renderLibrary();
-    renderListCards();
-    if (currentListId) renderListDetail();
-    markActiveRows();
-    updateFavoriteButton(currentTrack());
-    showIdleInfo();
-
-    if (removingCurrent && wasPlaying && follow) {
-      const idx = playlist.indexOf(follow);
-      if (idx >= 0) playTrackAtIndex(idx, true);
-    }
   }
 
   function openListChooser(track) {
@@ -1513,6 +1109,7 @@ document.addEventListener('DOMContentLoaded', () => {
         sheetItem(body, { icon: ICON.refresh, label: 'Buscar música en el teléfono', onClick: () => { closeSheet(); scanLibrary(); } });
       }
       sheetItem(body, { icon: ICON.upload, label: 'Agregar archivos de audio', onClick: () => { closeSheet(); dom.fileInput.click(); } });
+      sheetItem(body, { icon: ICON.play, label: 'Cargar pistas demo', onClick: () => { closeSheet(); loadDemoTracks(); } });
       sheetItem(body, { icon: ICON.gear, label: 'Ajustes', onClick: () => { closeSheet(); openSettings(); } });
     });
   });
@@ -1521,17 +1118,14 @@ document.addEventListener('DOMContentLoaded', () => {
   // Audio: progreso, crossfade y eventos del motor
   // ---------------------------------------------------------------------------
   audioEngine.onTimeUpdate = (current, duration) => {
-    if (!scrubbing) dom.currentTime.textContent = formatTime(current);
+    dom.currentTime.textContent = formatTime(current);
     dom.durationTime.textContent = formatTime(duration);
 
     if (duration > 0) {
       const pct = (current / duration) * 100;
-      if (!scrubbing) {
-        dom.progressFill.style.width = `${pct}%`;
-        dom.progressHandle.style.left = `${pct}%`;
-      }
+      dom.progressFill.style.width = `${pct}%`;
+      dom.progressHandle.style.left = `${pct}%`;
       dom.miniProgressFill.style.width = `${pct}%`;
-      saveSessionSoon();
 
       // Precargar la siguiente cuando faltan ~35 s (o, en pistas cortas, a mitad)
       const remaining = duration - current;
@@ -1552,6 +1146,16 @@ document.addEventListener('DOMContentLoaded', () => {
   };
 
   audioEngine.onTrackEnded = (isCrossfadeTrigger = false) => { nextTrack(isCrossfadeTrigger); };
+
+  // Motor nativo: Android pausó por una llamada, otra app o audífonos desconectados (o volvió a sonar)
+  audioEngine.onNativeState = (playing) => {
+    if (playing !== isPlaying && currentTrack()) setPlayingState(playing);
+  };
+  audioEngine.onNativeError = () => {
+    const t = currentTrack();
+    setPlayingState(false);
+    showToast(t ? `No se pudo reproducir "${t.title}".` : 'No se pudo reproducir la pista.');
+  };
 
   audioEngine.onCrossfadeStart = () => {
     dom.crossfadeBadge.classList.add('active');
@@ -1592,9 +1196,9 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     if (current) currentTrackIndex = playlist.findIndex(t => t.id === current.id);
-    saveQueue();
   }
 
+  dom.btnShuffleNow.addEventListener('click', executeShuffle);
   dom.btnShuffle.addEventListener('click', () => {
     dom.btnShuffle.classList.toggle('active');
     executeShuffle();
@@ -1613,75 +1217,15 @@ document.addEventListener('DOMContentLoaded', () => {
   dom.btnNext.addEventListener('click', () => nextTrack(false));
   dom.btnPrev.addEventListener('click', prevTrack);
 
-  // Barra de tiempo táctil: se puede tocar o deslizar el dedo hasta el punto que se quiere.
-  // Mientras se desliza solo se mueve la barra; la canción salta al soltar (así no se corta el audio).
-  (function bindScrub() {
-    const bar = dom.progressTrack;
-    let activeId = null;
-    let lastPct = 0;
-
-    const totalSeconds = () => {
-      const t = currentTrack();
-      if (restorePending && t) return t.duration || 0; // canción recordada, aún sin cargar
-      const a = audioEngine.getActivePlayer().audio;
-      return a && isFinite(a.duration) ? a.duration : 0;
-    };
-    const pctAt = (e) => {
-      const r = bar.getBoundingClientRect();
-      return r.width ? clamp((e.clientX - r.left) / r.width, 0, 1) : 0;
-    };
-    const preview = (pct) => {
-      lastPct = pct;
-      dom.progressFill.style.width = `${pct * 100}%`;
-      dom.progressHandle.style.left = `${pct * 100}%`;
-      dom.currentTime.textContent = formatTime(pct * totalSeconds());
-    };
-    const resyncFromPlayer = () => {
-      const a = audioEngine.getActivePlayer().audio;
-      if (a && isFinite(a.duration) && a.duration > 0) {
-        const pct = (a.currentTime / a.duration) * 100;
-        dom.progressFill.style.width = `${pct}%`;
-        dom.progressHandle.style.left = `${pct}%`;
-        dom.currentTime.textContent = formatTime(a.currentTime);
-      }
-    };
-
-    bar.addEventListener('pointerdown', (e) => {
-      if (activeId !== null || (e.pointerType === 'mouse' && e.button !== 0)) return;
-      if (!(totalSeconds() > 0)) return;
-      activeId = e.pointerId;
-      scrubbing = true;
-      try { bar.setPointerCapture(e.pointerId); } catch (err) { /* sin captura */ }
-      bar.classList.add('scrubbing');
-      preview(pctAt(e));
-      e.preventDefault();
-    });
-    bar.addEventListener('pointermove', (e) => {
-      if (e.pointerId === activeId) preview(pctAt(e));
-    });
-
-    const finish = (e, commit) => {
-      if (e.pointerId !== activeId) return;
-      activeId = null;
-      scrubbing = false;
-      bar.classList.remove('scrubbing');
-      try { bar.releasePointerCapture(e.pointerId); } catch (err) { /* ya liberado */ }
-      const total = totalSeconds();
-      if (!commit || !(total > 0)) { resyncFromPlayer(); return; }
-      const target = lastPct * total;
-      const t = currentTrack();
-      if (restorePending && t) {
-        // Canción recordada sin cargar: Play empezará desde el punto elegido
-        restorePending.pos = target;
-        if (t.contentUri) storageSet(SESSION_KEY, JSON.stringify({ id: t.id, pos: Math.round(target * 10) / 10, src: queueSource }));
-      } else {
-        audioEngine.seek(target);
-        syncMedia();
-      }
-    };
-    bar.addEventListener('pointerup', (e) => finish(e, true));
-    bar.addEventListener('pointercancel', (e) => finish(e, false));
-  })();
+  dom.progressTrack.addEventListener('click', (e) => {
+    const rect = dom.progressTrack.getBoundingClientRect();
+    const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    const dur = audioEngine.getDuration();
+    if (dur) {
+      audioEngine.seek(pct * dur);
+      syncMedia();
+    }
+  });
 
   dom.crossfadeSlider.addEventListener('input', (e) => {
     const val = parseFloat(e.target.value);
@@ -1705,6 +1249,19 @@ document.addEventListener('DOMContentLoaded', () => {
   dom.vizEnabledToggle.addEventListener('change', () => {
     visualizer.enabled = dom.vizEnabledToggle.checked;
   });
+
+  // Motor de audio nativo (solo existe en la app Android con el módulo instalado)
+  (function setupNativeEngineSetting() {
+    const card = document.getElementById('nativeEngineCard');
+    const toggle = document.getElementById('nativeEngineToggle');
+    if (!card || !toggle || !NocturneNative.isAvailable()) return;
+    card.style.display = '';
+    toggle.checked = NocturneNative.isEnabled();
+    toggle.addEventListener('change', () => {
+      NocturneNative.setEnabled(toggle.checked);
+      showToast('Cierra y vuelve a abrir la app para aplicar el cambio.');
+    });
+  })();
 
   dom.eqBass.addEventListener('input', (e) => {
     const val = parseFloat(e.target.value);
@@ -1754,6 +1311,9 @@ document.addEventListener('DOMContentLoaded', () => {
       dom.btnRepeat.classList.remove('active');
       dom.repeatIndicator.textContent = '';
     }
+    // Con el motor nativo la siguiente ya pudo quedar lista: rehacerlo según el modo nuevo
+    if (repeatMode === 'one') audioEngine.clearNext();
+    prefetchedFor = null;
   });
 
   dom.vModeBtns.forEach((btn) => {
@@ -1789,6 +1349,13 @@ document.addEventListener('DOMContentLoaded', () => {
     if (currentListId) renderListDetail();
     showToast('Biblioteca vaciada.');
   }
+
+  dom.btnClearQueue.addEventListener('click', () => {
+    if (library.length === 0) { showToast('No hay nada que vaciar.'); return; }
+    confirmSheet('¿Vaciar la biblioteca?',
+      'Solo se quita de la app. No borra canciones de tu teléfono ni tus listas.',
+      'Vaciar', clearEverything);
+  });
 
   async function parseInBatches(files, size) {
     const out = [];
@@ -1859,6 +1426,11 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
+  function loadDemoTracks() {
+    addTracks(MetadataParser.getDemoTracks(), true);
+  }
+  dom.btnLoadDemos.addEventListener('click', loadDemoTracks);
+
   // ---------------------------------------------------------------------------
   // Atajos de teclado (escritorio)
   // ---------------------------------------------------------------------------
@@ -1875,12 +1447,10 @@ document.addEventListener('DOMContentLoaded', () => {
       e.preventDefault(); prevTrack();
     } else if (e.code === 'ArrowRight') {
       e.preventDefault();
-      const p = audioEngine.getActivePlayer();
-      if (p.audio) { audioEngine.seek(p.audio.currentTime + 5); syncMedia(); }
+      audioEngine.seek(audioEngine.getCurrentTime() + 5); syncMedia();
     } else if (e.code === 'ArrowLeft') {
       e.preventDefault();
-      const p = audioEngine.getActivePlayer();
-      if (p.audio) { audioEngine.seek(p.audio.currentTime - 5); syncMedia(); }
+      audioEngine.seek(audioEngine.getCurrentTime() - 5); syncMedia();
     } else if (e.code === 'KeyM') {
       dom.btnMute.click();
     } else if (e.code === 'KeyS') {
@@ -1905,295 +1475,6 @@ document.addEventListener('DOMContentLoaded', () => {
   function storageGet(key) { try { return localStorage.getItem(key); } catch (e) { return null; } }
   function storageSet(key, value) { try { localStorage.setItem(key, value); } catch (e) { /* sin almacenamiento */ } }
 
-  // ---------------------------------------------------------------------------
-  // Memoria del reproductor: recuerda la canción, el segundo y el orden de la cola.
-  // Al abrir la app muestra esa canción en pausa; al pulsar Play sigue desde ese punto.
-  // ---------------------------------------------------------------------------
-  function readJson(key) { try { return JSON.parse(storageGet(key)); } catch (e) { return null; } }
-
-  function saveQueue() {
-    const ids = playlist.filter(t => t.contentUri).map(t => t.id);
-    if (!ids.length) return;
-    const json = JSON.stringify({ ids, src: queueSource });
-    if (json === lastQueueJson) return; // la cola no cambió: no se vuelve a escribir
-    lastQueueJson = json;
-    storageSet(QUEUE_KEY, json);
-  }
-
-  /** Guarda la canción actual y su posición. Solo canciones del teléfono (las demás no sobreviven al cerrar la app). */
-  function saveSession(posOverride) {
-    if (restorePending) return; // aún no se reanuda: se conserva lo recordado
-    const t = currentTrack();
-    if (!t || !t.contentUri) return;
-    let pos = posOverride;
-    if (typeof pos !== 'number') {
-      const p = (audioEngine.players || []).find(pl => pl.track && pl.track.id === t.id) || audioEngine.getActivePlayer();
-      const a = p && p.audio;
-      pos = a ? (a.currentTime || 0) : 0;
-      const dur = a && isFinite(a.duration) && a.duration > 0 ? a.duration : (t.duration || 0);
-      if (dur && pos > dur - 2) pos = 0; // la canción terminó: la próxima vez empieza de cero
-    }
-    storageSet(SESSION_KEY, JSON.stringify({ id: t.id, pos: Math.round(pos * 10) / 10, src: queueSource }));
-  }
-
-  let lastSessionSave = 0;
-  function saveSessionSoon() {
-    const now = Date.now();
-    if (now - lastSessionSave < 3000) return;
-    lastSessionSave = now;
-    saveSession();
-  }
-
-  document.addEventListener('visibilitychange', () => { if (document.hidden) saveSession(); });
-  window.addEventListener('pagehide', () => saveSession());
-
-  /** Pone en pantalla (en pausa) la canción que sonaba la última vez. Se hace una sola vez, al traer la biblioteca. */
-  function restoreSession() {
-    if (sessionRestored) return;
-    sessionRestored = true;
-    if (currentTrack() || isPlaying) return;
-
-    const saved = readJson(SESSION_KEY);
-    if (!saved || saved.id === undefined) return;
-    const byId = new Map(library.map(t => [String(t.id), t]));
-    const track = byId.get(String(saved.id));
-    if (!track) return; // la canción ya no está en el teléfono
-
-    let queue = null;
-    let source = 'library';
-    const q = readJson(QUEUE_KEY);
-    if (q && Array.isArray(q.ids)) {
-      const tracks = q.ids.map(id => byId.get(String(id))).filter(Boolean);
-      const sourceOk = q.src === 'library' || !!NocturneLists.get(q.src);
-      if (sourceOk && tracks.indexOf(track) >= 0) { queue = tracks; source = q.src; }
-    }
-    if (!queue) { queue = library.slice(); source = 'library'; }
-
-    playlist = queue;
-    queueSource = source;
-    currentTrackIndex = playlist.indexOf(track);
-    if (currentTrackIndex < 0) { currentTrackIndex = -1; return; }
-
-    const pos = Math.max(0, Number(saved.pos) || 0);
-    restorePending = { pos };
-
-    updateNowPlayingUI(track);
-    markActiveRows();
-    const dur = track.duration || 0;
-    dom.currentTime.textContent = formatTime(pos);
-    dom.durationTime.textContent = formatTime(dur);
-    if (dur > 0) {
-      const pct = Math.min(100, (pos / dur) * 100);
-      dom.progressFill.style.width = `${pct}%`;
-      dom.progressHandle.style.left = `${pct}%`;
-      dom.miniProgressFill.style.width = `${pct}%`;
-    }
-
-    // Portada en miniatura mientras la canción completa no se ha cargado
-    const showThumb = (t) => {
-      if (currentTrack() !== t || t.cover || !t.thumb) return;
-      [dom.barCover, dom.currentCover].forEach((el) => { el.style.backgroundImage = `url("${t.thumb}")`; el.innerHTML = ''; });
-      visualizer.setCover(t.thumb); // y los colores de la interfaz toman el de la portada desde que se abre la app
-    };
-    showThumb(track);
-    NocturneLibrary.requestThumb(track, showThumb);
-  }
-
-  // ---------------------------------------------------------------------------
-  // Diagnóstico de audio: ayuda a encontrar la causa de los cortes (formato, bitrate, audífonos…)
-  // ---------------------------------------------------------------------------
-  async function logTrackDiag(track) {
-    try {
-      const ext = (String(track.fileName || '').split('.').pop() || '?').toUpperCase();
-      const mb = track.size ? `${(track.size / 1048576).toFixed(1)} MB` : 'tamaño ?';
-      const kbps = track.size && track.duration > 0 ? `~${Math.round((track.size * 8) / track.duration / 1000)} kbps` : 'kbps ?';
-      const outs = await NocturneMediaControls.audioOutputs();
-      audioEngine.logDiag(`▶ "${track.title}" · ${ext} · ${mb} · ${kbps} · salida: ${outs ? (outs.join(', ') || 'ninguna') : 'desconocida'}`);
-    } catch (e) { /* solo diagnóstico */ }
-  }
-
-  if (navigator.mediaDevices && navigator.mediaDevices.addEventListener) {
-    navigator.mediaDevices.addEventListener('devicechange', async () => {
-      const outs = await NocturneMediaControls.audioOutputs();
-      audioEngine.logDiag(`Cambió la conexión de audio → ${outs ? (outs.join(', ') || 'ninguna') : 'desconocida'}`);
-    });
-  }
-
-  // ---------------------------------------------------------------------------
-  // Fluidez: se anota qué hacía la persona (desplazar/tocar) para ligar cada tirón con su causa,
-  // y si la interfaz se traba seguido mientras suena música, se aligera sola ("modo ligero").
-  // ---------------------------------------------------------------------------
-  const scrollMarks = [];
-  const tapMarks = [];
-  const pushMark = (arr) => { arr.push(performance.now()); if (arr.length > 80) arr.shift(); };
-  const anyNear = (arr, from, to) => arr.some(t => t >= from && t <= to);
-  let scrollTimer = null;
-
-  document.addEventListener('scroll', () => {
-    pushMark(scrollMarks);
-    if (!liteMode) NocturneLibrary.setThumbMode('scroll'); // al desplazar, las portadas llegan de una en una
-    clearTimeout(scrollTimer);
-    scrollTimer = setTimeout(() => { if (!liteMode) NocturneLibrary.setThumbMode('normal'); }, 200);
-  }, { capture: true, passive: true });
-  document.addEventListener('pointerdown', () => pushMark(tapMarks), { capture: true, passive: true });
-
-  audioEngine.contextProvider = (start, dur) => {
-    const end = start + dur;
-    if (anyNear(scrollMarks, start - 300, end + 150)) return 'scroll';
-    if (anyNear(tapMarks, start - 1000, end + 150)) return 'tap';
-    return 'idle';
-  };
-
-  const recentLong = [];
-  let liteTimer = null;
-  let liteSavedViz = null;
-
-  audioEngine.onLongTask = () => {
-    if (!isPlaying) return;
-    const now = performance.now();
-    recentLong.push(now);
-    while (recentLong.length && now - recentLong[0] > 15000) recentLong.shift();
-    if (liteMode) { armLiteExit(); return; }
-    if (recentLong.length >= 3) enterLiteMode();
-  };
-
-  function armLiteExit() {
-    clearTimeout(liteTimer);
-    liteTimer = setTimeout(exitLiteMode, 90000); // 90 s sin tirones: todo vuelve a la normalidad
-  }
-
-  function enterLiteMode() {
-    liteMode = true;
-    document.body.classList.add('lite');
-    NocturneLibrary.setThumbMode('off');
-    liteSavedViz = visualizer.enabled;
-    visualizer.enabled = false;
-    audioEngine.stats.lite++;
-    audioEngine.logDiag('Modo ligero activado: la interfaz se trabó 3 veces en 15 s');
-    armLiteExit();
-  }
-
-  function exitLiteMode() {
-    if (!liteMode) return;
-    liteMode = false;
-    document.body.classList.remove('lite');
-    NocturneLibrary.setThumbMode('normal');
-    if (liteSavedViz !== null) visualizer.enabled = liteSavedViz;
-    liteSavedViz = null;
-    recentLong.length = 0;
-    audioEngine.logDiag('Modo ligero desactivado');
-  }
-
-  // Contadores acumulados: se guardan para no perderlos al cerrar la app
-  const STATS_KEY = 'nocturne.audiostats.v1';
-  audioEngine.loadStats(readJson(STATS_KEY));
-  let lastStatsJson = '';
-  function saveStats() {
-    const json = JSON.stringify(audioEngine.stats);
-    if (json === lastStatsJson) return;
-    lastStatsJson = json;
-    storageSet(STATS_KEY, json);
-  }
-  setInterval(saveStats, 30000);
-  document.addEventListener('visibilitychange', () => { if (document.hidden) saveStats(); });
-  window.addEventListener('pagehide', saveStats);
-
-  /** Conclusión corta a partir de los contadores (para leer de un vistazo). */
-  function diagVerdict(st) {
-    const L = st.long;
-    const out = [];
-    if (L.total >= 3 && L.scroll / L.total >= 0.5) out.push('La interfaz se traba al desplazar las listas (carga de pantalla compitiendo con el audio).');
-    else if (L.total >= 3 && L.tap / L.total >= 0.5) out.push('La interfaz se traba al tocar botones o menús.');
-    else if (L.total >= 3) out.push('Hay tirones aun en reposo (trabajo interno, como preparar la siguiente canción).');
-    if (st.ctxSuspend > 0) out.push('El sistema suspende el audio (cambio de audífonos u otra app).');
-    if (st.sysPause > 0) out.push('El sistema pausa el audio (llamada, otra app o audífonos).');
-    if (st.stuck > 0 && L.total === 0 && st.ctxSuspend === 0 && st.sysPause === 0) out.push('El audio se detiene sin tirones de interfaz: apunta al archivo, al decodificador o a la conexión de los audífonos.');
-    if (st.waiting + st.stalled > 0 && !out.length) out.push('El archivo tarda en entregar datos (formato pesado o poca memoria).');
-    return out.length ? out : ['Sin problemas registrados.'];
-  }
-
-  async function buildAudioDiagText() {
-    const ua = navigator.userAgent || '';
-    const android = (ua.match(/Android ([\d.]+); ([^)]+)\)/) || []);
-    const webview = (ua.match(/Chrome\/([\d.]+)/) || [])[1] || '?';
-    const outs = await NocturneMediaControls.audioOutputs();
-    const t = currentTrack();
-    const st = audioEngine.stats;
-    const L = st.long;
-    const since = new Date(st.since);
-    const pad = (n) => String(n).padStart(2, '0');
-    const lines = [
-      `Nocturne diag v2 · contadores desde ${pad(since.getDate())}/${pad(since.getMonth() + 1)} ${pad(since.getHours())}:${pad(since.getMinutes())}`,
-      `Android ${android[1] || '?'} · ${android[2] || '?'} · WebView ${webview}`,
-      `Salida: ${outs ? (outs.join(', ') || 'ninguna') : 'desconocida'} · ${audioEngine.ctx ? audioEngine.ctx.sampleRate + ' Hz' : 'audio sin iniciar'} · crossfade ${audioEngine.crossfadeDuration}s`,
-      t ? `Canción: ${t.title} (${(String(t.fileName || '').split('.').pop() || '?').toUpperCase()})` : 'Canción: ninguna',
-      `Tirones ≥120 ms: ${L.total} (desplazando ${L.scroll} · tocando ${L.tap} · reposo ${L.idle}) · máx ${L.max} ms`,
-      `Audio: esperó ${st.waiting} · atorado ${st.stalled} · pausas del sistema ${st.sysPause} · suspendido ${st.ctxSuspend} · se detuvo ${st.stuck}`,
-      `Autocorrección: reanudar ${st.fix.resume} · re-sincronizar ${st.fix.resync} · recargar ${st.fix.reload} · modo ligero ${st.lite} (ahora: ${liteMode ? 'sí' : 'no'})`,
-      'Causa probable: ' + diagVerdict(st).join(' '),
-      '— Últimos eventos —'
-    ];
-    const recent = audioEngine.diag.slice(-12);
-    return lines.concat(recent.length ? recent : ['(sin eventos todavía)']).join('\n');
-  }
-
-  async function renderAudioDiag() {
-    dom.audioDiagLog.textContent = await buildAudioDiagText();
-  }
-  dom.btnDiagRefresh.addEventListener('click', renderAudioDiag);
-  dom.btnDiagReset.addEventListener('click', () => {
-    audioEngine.resetStats();
-    audioEngine.diag.length = 0;
-    saveStats();
-    renderAudioDiag();
-    showToast('Contadores reiniciados.');
-  });
-  dom.btnDiagCopy.addEventListener('click', async () => {
-    const text = await buildAudioDiagText();
-    dom.audioDiagLog.textContent = text;
-    try {
-      await navigator.clipboard.writeText(text);
-      showToast('Diagnóstico copiado.');
-    } catch (e) {
-      showToast('No se pudo copiar: mantén pulsado el texto para copiarlo.');
-    }
-  });
-
-  // Permiso de fotos (portadas): se pide una sola vez, justo después de traer la música.
-  // Las portadas se intentan cargar de todos modos; el permiso solo ayuda en algunos teléfonos.
-  const IMAGES_ASKED_KEY = 'nocturne.imagesPermissionAsked';
-  async function askImagesPermissionOnce() {
-    if (storageGet(IMAGES_ASKED_KEY)) return;
-    storageSet(IMAGES_ASKED_KEY, '1');
-    try { await NocturneLibrary.ensureImagesPermission(); } catch (e) { /* se puede activar en Ajustes */ }
-  }
-
-  // Segundo plano: tras la primera reproducción se explica y se pide quitar la restricción de batería
-  // para que Android no corte la música al salir de la app o apagar la pantalla. Se muestra una sola vez.
-  const BATTERY_ASKED_KEY = 'nocturne.batteryPromptShown';
-  async function askBatteryExemptionOnce() {
-    if (!NocturneMediaControls.isAvailable() || storageGet(BATTERY_ASKED_KEY)) return;
-    try {
-      await NocturneMediaControls.whenPermissionHandled(); // primero el aviso de notificaciones, si lo hay
-      const unrestricted = await NocturneMediaControls.batteryUnrestricted();
-      if (unrestricted === null) return; // este APK no trae el módulo nuevo: nada que pedir
-      if (unrestricted) { storageSet(BATTERY_ASKED_KEY, '1'); return; }
-      await new Promise(resolve => setTimeout(resolve, 1200));
-      if (document.hidden || sheetOpen) return; // se vuelve a intentar en la próxima reproducción
-      storageSet(BATTERY_ASKED_KEY, '1');
-      openSheet('Música en segundo plano', (body) => {
-        const pText = document.createElement('p');
-        pText.className = 'sheet-text';
-        pText.textContent = 'Para que la música siga sonando sin interrupciones cuando salgas de la app o apagues la pantalla, permite que Nocturne funcione sin restricciones de batería.';
-        body.appendChild(pText);
-        sheetActions(body, [
-          { label: 'Ahora no', onClick: closeSheet },
-          { label: 'Permitir', primary: true, onClick: () => { closeSheet(); NocturneMediaControls.requestBatteryExemption(); } }
-        ]);
-      });
-    } catch (e) { /* no es crítico */ }
-  }
-
   /** Reemplaza las pistas del teléfono conservando las añadidas a mano y la que suena. */
   function setLibraryTracks(scanned) {
     const known = new Map(library.filter(t => t.contentUri).map(t => [t.contentUri, t]));
@@ -2207,19 +1488,7 @@ document.addEventListener('DOMContentLoaded', () => {
     renderListCards();
     if (currentListId) renderListDetail();
 
-    restoreSession();
     showIdleInfo();
-  }
-
-  /** Muestra al abrir la app la lista guardada la última vez, sin esperar a que termine la búsqueda. */
-  async function showCachedLibrary() {
-    try {
-      const cached = await NocturneLibrary.loadCache();
-      if (!cached || lastLibrarySig) return; // sin caché, o la búsqueda ya terminó antes
-      lastLibrarySig = cached.sig;
-      lastScanned = cached.tracks;
-      setLibraryTracks(cached.tracks);
-    } catch (e) { /* sin caché: se espera a la búsqueda de siempre */ }
   }
 
   /** Se muestra si el permiso quedó denegado: Android ya no vuelve a preguntar, hay que activarlo a mano. */
@@ -2249,22 +1518,14 @@ document.addEventListener('DOMContentLoaded', () => {
     try {
       const scanned = await NocturneLibrary.scan();
       if (scanned.length === 0) {
-        if (!silent) showToast('No encontré música. Prueba con el menú ⋮ → Agregar archivos de audio.');
+        if (!silent) showToast('No encontré música. Prueba con "Agregar archivos".');
       } else {
-        // Si la lista es idéntica a la que ya se ve (caché o búsqueda anterior), no se vuelve a dibujar
-        const sig = NocturneLibrary.signature(scanned);
-        if (sig !== lastLibrarySig) {
-          lastLibrarySig = sig;
-          lastScanned = scanned;
-          setLibraryTracks(scanned);
-          NocturneLibrary.saveCache(scanned);
-        }
+        setLibraryTracks(scanned);
         storageSet(COUNT_KEY, String(scanned.length));
         if (!silent || scanned.length !== before) {
           showToast(`${plural(scanned.length, 'canción encontrada', 'canciones encontradas')}.`);
         }
         storageSet(FIRST_SCAN_KEY, '1');
-        askImagesPermissionOnce();
       }
     } catch (e) {
       console.warn('Escaneo de biblioteca falló:', e);
@@ -2289,8 +1550,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     (async () => {
       if (await NocturneLibrary.hasPermission()) {
-        showCachedLibrary();           // al instante: la lista de la última vez
-        scanLibrary({ silent: true }); // y en segundo plano se comprueba si algo cambió
+        scanLibrary({ silent: true });
       } else if (!storageGet(ASKED_KEY)) {
         // Primer arranque: como cualquier app, pide el permiso de inmediato
         storageSet(ASKED_KEY, '1');
@@ -2325,20 +1585,6 @@ document.addEventListener('DOMContentLoaded', () => {
       dom.aboutNotif.textContent = 'Notificación de reproducción: solo disponible en la app Android';
     }
     if (libStatus === 'ready') {
-      const imgOk = await NocturneLibrary.hasImagesPermission();
-      dom.aboutCovers.textContent = `Portadas: ${NocturneLibrary.thumbsSupported() ? (imgOk ? 'permiso de fotos concedido' : 'sin permiso de fotos (se intentan cargar igual)') : 'NO incluidas en este APK (falta recompilar)'}`;
-    } else {
-      dom.aboutCovers.textContent = 'Portadas: solo disponibles en la app Android';
-    }
-    if (notif === 'ready') {
-      const free = await NocturneMediaControls.batteryUnrestricted();
-      dom.aboutBackground.textContent = free === null
-        ? 'Segundo plano: NO incluido en este APK (falta recompilar)'
-        : `Segundo plano: ${free ? 'sin restricciones de batería' : 'con restricción de batería (puede cortarse la música)'}`;
-    } else {
-      dom.aboutBackground.textContent = 'Segundo plano: solo disponible en la app Android';
-    }
-    if (libStatus === 'ready') {
       const granted = await NocturneLibrary.hasPermission();
       dom.aboutMusic.textContent = `Música del teléfono: ${granted ? 'permiso concedido' : 'sin permiso todavía'}`;
     } else if (libStatus === 'missing-plugin') {
@@ -2346,7 +1592,6 @@ document.addEventListener('DOMContentLoaded', () => {
     } else {
       dom.aboutMusic.textContent = 'Música del teléfono: solo disponible en la app Android';
     }
-    renderAudioDiag();
   }
 
   // ---------------------------------------------------------------------------

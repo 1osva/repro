@@ -50,48 +50,6 @@ class AudioEngine {
 
     this.volume = 0.8;
     this._initialized = false;
-
-    // Diagnóstico: últimos eventos de audio (cortes, suspensiones, tirones) y contadores acumulados.
-    this.diag = [];
-    this._lastAppPauseAt = 0;
-    this.stats = AudioEngine.newStats();
-    this.onLongTask = null;      // la app se entera de los tirones para aligerar la interfaz
-    this.contextProvider = null; // la app dice qué hacía la persona: 'scroll' | 'tap' | 'idle'
-    this._trackStartAt = 0;
-    this._lastReload = -Infinity; // aún no se ha recargado ninguna canción
-  }
-
-  static newStats() {
-    return {
-      since: Date.now(),
-      long: { total: 0, scroll: 0, tap: 0, idle: 0, max: 0 }, // tirones de la interfaz ≥ 120 ms mientras suena
-      waiting: 0, stalled: 0, sysPause: 0, ctxSuspend: 0,     // lo que reporta el audio
-      stuck: 0,                                                // veces que el audio dejó de avanzar
-      fix: { resume: 0, resync: 0, reload: 0 },                // autocorrecciones
-      lite: 0                                                  // veces que se activó el modo ligero
-    };
-  }
-
-  /** Recupera contadores guardados (se mezclan con los vacíos para no romper si faltan campos). */
-  loadStats(saved) {
-    const base = AudioEngine.newStats();
-    if (!saved || typeof saved !== 'object') { this.stats = base; return; }
-    this.stats = Object.assign(base, saved, {
-      long: Object.assign(base.long, saved.long || {}),
-      fix: Object.assign(base.fix, saved.fix || {})
-    });
-  }
-
-  resetStats() { this.stats = AudioEngine.newStats(); }
-
-  /** Anota un evento de diagnóstico (se conservan los últimos 60). */
-  logDiag(message) {
-    const t = new Date();
-    const hh = String(t.getHours()).padStart(2, '0');
-    const mm = String(t.getMinutes()).padStart(2, '0');
-    const ss = String(t.getSeconds()).padStart(2, '0');
-    this.diag.push(`${hh}:${mm}:${ss}  ${message}`);
-    if (this.diag.length > 60) this.diag.shift();
   }
 
   /**
@@ -114,54 +72,10 @@ class AudioEngine {
       this.ctx = new AudioContextClass();
     }
 
-    this.logDiag(`Audio iniciado: ${this.ctx.sampleRate} Hz, estado ${this.ctx.state}`);
-    // Si el sistema suspende el audio (cambio de audífonos, otra app…) mientras debería sonar, se reanuda
-    this.ctx.addEventListener('statechange', () => {
-      if (!this.ctx) return;
-      this.logDiag(`El audio del sistema pasó a: ${this.ctx.state}`);
-      if (this.ctx.state === 'closed') return;
-      if (this.ctx.state !== 'running') this.stats.ctxSuspend++;
-      const active = this.getActivePlayer();
-      if (this.ctx.state !== 'running' && active && active.audio && !active.audio.paused && !this.synthActive) {
-        try {
-          this.ctx.resume();
-          this.logDiag('Se intentó reanudar el audio automáticamente');
-        } catch (e) { /* sin acción */ }
-      }
-    });
-
-    // Tirones de la interfaz (si pasan mientras suena música, pueden causar cortes)
-    try {
-      if (window.PerformanceObserver && !this._longTaskObserver) {
-        this._longTaskObserver = new PerformanceObserver((list) => {
-          const p = this.getActivePlayer();
-          if (!p || !p.audio || p.audio.paused) return;
-          list.getEntries().forEach((e) => {
-            if (e.duration < 120) return;
-            let ctxTag = 'idle';
-            try { if (this.contextProvider) ctxTag = this.contextProvider(e.startTime, e.duration) || 'idle'; } catch (err) { /* sin contexto */ }
-            const long = this.stats.long;
-            long.total++;
-            long[ctxTag] = (long[ctxTag] || 0) + 1;
-            long.max = Math.max(long.max, Math.round(e.duration));
-            const where = { scroll: 'al desplazar', tap: 'al tocar', idle: 'en reposo' }[ctxTag] || ctxTag;
-            this.logDiag(`Tirón de la interfaz: ${Math.round(e.duration)} ms (${where})`);
-            if (this.onLongTask) { try { this.onLongTask(e.duration, ctxTag); } catch (err) { /* sin aviso */ } }
-          });
-        });
-        this._longTaskObserver.observe({ entryTypes: ['longtask'] });
-      }
-    } catch (e) { /* el sistema no lo permite */ }
-
     // Analizador de frecuencias
     this.analyser = this.ctx.createAnalyser();
-    // 1024 puntos: separa los graves (≈47 Hz por punto) para que las barras sigan a cada instrumento.
-    // El suavizado fino lo hace el visualizador (ataque rápido, caída lenta).
-    this.analyser.fftSize = 1024;
-    this.analyser.smoothingTimeConstant = 0.5;
-    // Rango más amplio que el predeterminado (-100/-30 dB): los graves fuertes ya no se aplanan contra el tope
-    this.analyser.minDecibels = -90;
-    this.analyser.maxDecibels = -12;
+    this.analyser.fftSize = 256;
+    this.analyser.smoothingTimeConstant = 0.72; // más bajo = las barras reaccionan antes al ritmo
 
     // Ganancia Master
     this.masterGain = this.ctx.createGain();
@@ -207,29 +121,7 @@ class AudioEngine {
         }
       });
 
-      p.audio.addEventListener('waiting', () => {
-        if (this.activePlayerIndex === idx && !p.audio.seeking) {
-          this.stats.waiting++;
-          this.logDiag('Sin datos suficientes: el audio esperó (waiting)');
-        }
-      });
-      p.audio.addEventListener('stalled', () => {
-        if (this.activePlayerIndex === idx) {
-          this.stats.stalled++;
-          this.logDiag('El audio se atoró (stalled)');
-        }
-      });
-      p.audio.addEventListener('pause', () => {
-        // Una pausa que no vino de la app (Date.now() lejos de la última pausa propia) la causó el sistema
-        if (this.activePlayerIndex === idx && !this.isCrossfading && !p.audio.ended && Date.now() - this._lastAppPauseAt > 1500) {
-          this.stats.sysPause++;
-          this.logDiag('El sistema pausó el audio (otra app, llamada o audífonos)');
-        }
-      });
-
       p.audio.addEventListener('error', (e) => {
-        const code = p.audio.error ? p.audio.error.code : '?';
-        this.logDiag(`Error del archivo de audio (código ${code})`);
         console.warn(`Error en elemento de audio ${idx}:`, e);
       });
     });
@@ -242,7 +134,6 @@ class AudioEngine {
     this.analyser.connect(this.ctx.destination);
 
     this._initialized = true;
-    this._startWatchdog();
   }
 
   /**
@@ -259,72 +150,6 @@ class AudioEngine {
     }
     this.isCrossfading = false;
     if (this.onCrossfadeEnd) this.onCrossfadeEnd();
-  }
-
-  /**
-   * Guardián: cada segundo comprueba que el audio realmente avance. Si se queda detenido sin que nadie lo pausara,
-   * se corrige solo en tres pasos (reanudar → re-sincronizar → recargar desde el mismo segundo).
-   */
-  _startWatchdog() {
-    if (this._watchdog) return;
-    let lastTime = -1;
-    let lastWall = 0;
-    let stuck = 0;
-    this._watchdog = setInterval(() => {
-      const p = this.getActivePlayer();
-      const a = p && p.audio;
-      const idle = !a || !a.src || a.paused || a.ended || a.seeking || this.synthActive || this.isCrossfading || this.pauseTimeout;
-      const nearEnd = a && a.duration > 0 && a.currentTime >= a.duration - 0.4;
-      const justStarted = performance.now() - this._trackStartAt < 3000; // dar tiempo a cargar la canción
-      if (idle || nearEnd || justStarted) { lastTime = -1; stuck = 0; return; }
-
-      const now = performance.now();
-      const advanced = lastTime < 0 || Math.abs(a.currentTime - lastTime) > 0.05;
-      const waited = now - lastWall;
-      lastTime = a.currentTime;
-      lastWall = now;
-      if (advanced) {
-        if (stuck > 0) this.logDiag('✔ El audio volvió a avanzar');
-        stuck = 0;
-        return;
-      }
-      if (waited < 800) return;
-      stuck++;
-      this.stats.stuck++;
-      this._recover(a, stuck);
-    }, 1000);
-  }
-
-  _recover(a, step) {
-    let ctxTag = 'idle';
-    try { if (this.contextProvider) ctxTag = this.contextProvider(performance.now() - 1500, 1500) || 'idle'; } catch (e) { /* sin contexto */ }
-    const where = { scroll: 'al desplazar', tap: 'al tocar', idle: 'en reposo' }[ctxTag] || ctxTag;
-    const play = () => { try { const r = a.play(); if (r && r.catch) r.catch(() => {}); } catch (e) { /* sin acción */ } };
-
-    if (step === 1) {
-      this.stats.fix.resume++;
-      this.logDiag(`⚠ El audio se detuvo (${where}): se reanuda`);
-      try { if (this.ctx && this.ctx.state !== 'running') this.ctx.resume(); } catch (e) { /* sin acción */ }
-      play();
-    } else if (step === 2) {
-      this.stats.fix.resync++;
-      this.logDiag('⚠ Sigue detenido: se re-sincroniza en el mismo segundo');
-      try { a.currentTime = a.currentTime; } catch (e) { /* sin acción */ }
-      play();
-    } else if (step === 3) {
-      if (performance.now() - this._lastReload < 15000) return; // sin insistir una y otra vez
-      this._lastReload = performance.now();
-      this.stats.fix.reload++;
-      const pos = a.currentTime;
-      this.logDiag('⚠ Sigue detenido: se recarga la canción desde el mismo segundo');
-      a.addEventListener('loadedmetadata', () => {
-        try { a.currentTime = pos; } catch (e) { /* sin acción */ }
-        play();
-      }, { once: true });
-      try { a.src = a.src; a.load(); } catch (e) { /* sin acción */ }
-    } else if (step === 4) {
-      this.logDiag('✖ No se pudo recuperar el audio automáticamente');
-    }
   }
 
   setVolume(val) {
@@ -363,6 +188,42 @@ class AudioEngine {
     return this.players[1 - this.activePlayerIndex];
   }
 
+  // --- Estado de reproducción (la app lo consulta aquí, sin tocar los <audio> directamente) ---
+
+  /** Segundos transcurridos de la canción actual. */
+  getCurrentTime() {
+    const a = this.getActivePlayer().audio;
+    return a ? (a.currentTime || 0) : 0;
+  }
+
+  /** Duración real en segundos (0 si aún no se conoce). */
+  getDuration() {
+    const a = this.getActivePlayer().audio;
+    return a && isFinite(a.duration) && a.duration > 0 ? a.duration : 0;
+  }
+
+  /** ¿Está sonando algo (archivo o demo sintética)? */
+  isAudioPlaying() {
+    const a = this.getActivePlayer().audio;
+    return !!((a && !a.paused) || this.synthActive);
+  }
+
+  /** Posición y duración de `track`; durante un crossfade la canción nueva está en el otro reproductor. */
+  getPlaybackInfo(track) {
+    const p = (track && this.players.find(pl => pl.track && pl.track.id === track.id)) || this.getActivePlayer();
+    const a = p && p.audio;
+    return {
+      position: a ? (a.currentTime || 0) : 0,
+      duration: a && isFinite(a.duration) && a.duration > 0 ? a.duration : 0
+    };
+  }
+
+  /** ¿Se reproducirá `track` con el motor nativo? (solo lo cambia NativeAudioEngine) */
+  usesNative() { return false; }
+
+  /** Quita la siguiente canción ya precargada (solo hace algo el motor nativo). */
+  clearNext() {}
+
   /**
    * Deja lista la siguiente canción en el reproductor libre ANTES del crossfade.
    * Así, cuando llega el momento, solo hay que darle play: no se carga ni se decodifica
@@ -384,7 +245,6 @@ class AudioEngine {
    * Reproduce una pista de inmediato o mediante crossfade controlado
    */
   async playTrack(track, forceImmediate = false) {
-    this._trackStartAt = performance.now();
     if (!track) return;
     this.initContext();
     if (this.ctx.state === 'suspended') {
@@ -549,14 +409,11 @@ class AudioEngine {
       p.gain.gain.cancelScheduledValues(now);
       p.gain.gain.setValueAtTime(p.gain.gain.value || 1.0, now);
       p.gain.gain.linearRampToValueAtTime(0.0001, now + 0.12);
-      this._lastAppPauseAt = Date.now();
       this.pauseTimeout = setTimeout(() => {
-        this._lastAppPauseAt = Date.now();
         p.audio.pause();
         this.pauseTimeout = null;
       }, 130);
     } else if (p.audio) {
-      this._lastAppPauseAt = Date.now();
       p.audio.pause();
     }
   }

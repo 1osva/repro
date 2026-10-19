@@ -126,6 +126,12 @@ const NocturneMediaControls = (() => {
     }
   }
 
+  /** La portada de la canción actual llegó después de empezar: volver a enviarla. */
+  function refreshCover() {
+    lastTrackId = null;
+    sync();
+  }
+
   /** Quita la notificación y detiene el servicio. */
   function stop() {
     lastTrackId = null;
@@ -143,48 +149,7 @@ const NocturneMediaControls = (() => {
     });
   }
 
-
-  /** Espera a que termine el pedido de permiso de notificaciones (si hubo uno). */
-  function whenPermissionHandled() {
-    return permissionStep || Promise.resolve();
-  }
-
-  /** ¿La app puede seguir reproduciendo en segundo plano sin restricciones de batería? null = no se puede saber. */
-  async function batteryUnrestricted() {
-    const plugin = getPlugin();
-    if (!plugin || typeof plugin.isIgnoringBatteryOptimizations !== 'function') return null;
-    try {
-      const r = await plugin.isIgnoringBatteryOptimizations();
-      return !!(r && r.ignoring);
-    } catch (e) {
-      return null;
-    }
-  }
-
-  /** Muestra el aviso del sistema para quitar la restricción de batería. */
-  async function requestBatteryExemption() {
-    const plugin = getPlugin();
-    if (!plugin || typeof plugin.requestIgnoreBatteryOptimizations !== 'function') return;
-    try { await plugin.requestIgnoreBatteryOptimizations(); } catch (e) { /* el usuario lo puede activar en Ajustes */ }
-  }
-
-
-  /** Salidas de audio conectadas (Bluetooth, cable, altavoz…), solo para diagnóstico. null si no se puede saber. */
-  async function audioOutputs() {
-    const plugin = getPlugin();
-    if (!plugin || typeof plugin.getAudioOutputs !== 'function') return null;
-    try {
-      const r = await plugin.getAudioOutputs();
-      return r && Array.isArray(r.outputs) ? r.outputs : null;
-    } catch (e) {
-      return null;
-    }
-  }
-
-  return {
-    status, isAvailable, setProvider, sync, stop, onAction, notificationPermission,
-    whenPermissionHandled, batteryUnrestricted, requestBatteryExemption, audioOutputs
-  };
+  return { status, isAvailable, setProvider, sync, refreshCover, stop, onAction, notificationPermission };
 })();
 
 window.NocturneMediaControls = NocturneMediaControls;

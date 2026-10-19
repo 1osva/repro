@@ -1,6 +1,6 @@
 // Instala los módulos nativos de Nocturne en el proyecto Android que genera
 // `npx cap add android`:
-//   - MediaLibrary: lee la música del teléfono (permiso de música) y sus portadas (permiso de fotos).
+//   - MediaLibrary: lee la música del teléfono (permiso de música).
 //   - MediaControls + MediaNotificationService: notificación de música y reproducción en
 //     segundo plano (servicio en primer plano + MediaSession).
 // Se ejecuta solo, mediante el hook "capacitor:update:after" de package.json.
@@ -26,7 +26,7 @@ if (!fs.existsSync(androidDir)) fail('no existe android/. Ejecuta antes: npx cap
 if (!fs.existsSync(javaDir)) fail('no existe ' + javaDir + ' (¿cambió el appId?)');
 
 // 1) Código nativo: se sustituye el paquete por el appId
-const javaFiles = ['MediaLibraryPlugin.java', 'MediaControlsPlugin.java', 'MediaNotificationService.java', 'MainActivity.java'];
+const javaFiles = ['MediaLibraryPlugin.java', 'MediaControlsPlugin.java', 'MediaNotificationService.java', 'NativeAudioPlayer.java', 'NativePlayerPlugin.java', 'MainActivity.java'];
 for (const file of javaFiles) {
   const src = fs.readFileSync(path.join(root, 'native', file), 'utf8').replace(/__APP_PACKAGE__/g, appId);
   fs.writeFileSync(path.join(javaDir, file), src);
@@ -45,13 +45,11 @@ for (const file of fs.readdirSync(iconsSrc)) {
 let manifest = fs.readFileSync(manifestPath, 'utf8');
 const permissions = [
   '<uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />',
-  '<uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />',
   '<uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />',
   '<uses-permission android:name="android.permission.FOREGROUND_SERVICE" />',
   '<uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />',
   '<uses-permission android:name="android.permission.POST_NOTIFICATIONS" />',
-  '<uses-permission android:name="android.permission.WAKE_LOCK" />',
-  '<uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />'
+  '<uses-permission android:name="android.permission.WAKE_LOCK" />'
 ];
 const anchor = '<uses-permission android:name="android.permission.INTERNET" />';
 if (!manifest.includes(anchor)) fail('no encontré el permiso INTERNET en AndroidManifest.xml para anclar los nuevos');
@@ -79,4 +77,21 @@ if (!manifest.includes(`android:name="${serviceName}"`)) {
 
 fs.writeFileSync(manifestPath, manifest);
 console.log('  + AndroidManifest.xml: ' + added + ' elemento(s) nuevo(s)');
+// 4) Gradle: Media3 (ExoPlayer) para el reproductor nativo
+const gradlePath = path.join(androidDir, 'app', 'build.gradle');
+if (!fs.existsSync(gradlePath)) fail('no existe ' + gradlePath);
+let gradle = fs.readFileSync(gradlePath, 'utf8');
+const MEDIA3 = '1.8.0';
+if (!gradle.includes('androidx.media3:media3-exoplayer')) {
+  const idx = gradle.lastIndexOf('dependencies {');
+  if (idx < 0) fail('no encontré el bloque dependencies en app/build.gradle');
+  const at = idx + 'dependencies {'.length;
+  gradle = gradle.slice(0, at) +
+    `\n    implementation "androidx.media3:media3-exoplayer:${MEDIA3}"` +
+    `\n    implementation "androidx.media3:media3-common:${MEDIA3}"` +
+    gradle.slice(at);
+  fs.writeFileSync(gradlePath, gradle);
+  console.log('  + app/build.gradle: Media3 ' + MEDIA3);
+}
+
 console.log('patch-android: listo');

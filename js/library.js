@@ -5,10 +5,6 @@
  *  - scan():     pide el permiso de música si falta y devuelve las canciones del teléfono.
  *  - resolve():  lee UNA canción completa a memoria justo antes de sonar.
  *  - release():  libera esa memoria cuando la canción ya no está cerca de la actual.
- *  - requestThumb(): pide la portada (miniatura) de una canción para mostrarla en las listas,
- *                    sin tener que cargar el archivo de audio completo.
- *  - saveCache() / loadCache(): guardan en el teléfono (IndexedDB) la lista de canciones y sus portadas
- *                    para que al abrir la app aparezcan al instante, sin esperar a la búsqueda.
  *
  * Por qué resolve() descarga el archivo entero en lugar de usar la URL directa:
  * el servidor interno de Capacitor responde a las peticiones con "Range" (las que
@@ -88,113 +84,6 @@ const NocturneLibrary = (() => {
     return tracks;
   }
 
-
-  // ---------------------------------------------------------------------------
-  // Caché local (IndexedDB): lista de canciones y portadas en miniatura.
-  // Si algo falla (sin IndexedDB, almacenamiento lleno…) simplemente no se usa y todo sigue como antes.
-  // ---------------------------------------------------------------------------
-  const DB_NAME = 'nocturne-cache';
-  const THUMB_MAX = 6000;                          // tope de portadas guardadas
-  const THUMB_NONE_TTL = 7 * 24 * 3600 * 1000;     // "esta canción no trae portada" se recuerda 7 días
-  let dbPromise = null;
-
-  function openDb() {
-    if (dbPromise) return dbPromise;
-    dbPromise = new Promise((resolve) => {
-      try {
-        if (!window.indexedDB) { resolve(null); return; }
-        const req = window.indexedDB.open(DB_NAME, 1);
-        req.onupgradeneeded = () => {
-          const db = req.result;
-          if (!db.objectStoreNames.contains('kv')) db.createObjectStore('kv');
-          if (!db.objectStoreNames.contains('thumbs')) db.createObjectStore('thumbs');
-        };
-        req.onsuccess = () => { resolve(req.result); trimThumbs(req.result); };
-        req.onerror = () => resolve(null);
-        req.onblocked = () => resolve(null);
-      } catch (e) {
-        resolve(null);
-      }
-    });
-    return dbPromise;
-  }
-
-  /** Si hay demasiadas portadas guardadas, se vacía ese almacén (se vuelven a leer poco a poco). */
-  function trimThumbs(db) {
-    try {
-      const req = db.transaction('thumbs').objectStore('thumbs').count();
-      req.onsuccess = () => {
-        if (req.result > THUMB_MAX) {
-          try { db.transaction('thumbs', 'readwrite').objectStore('thumbs').clear(); } catch (e) { /* sin acción */ }
-        }
-      };
-    } catch (e) { /* sin acción */ }
-  }
-
-  async function idbGet(store, key) {
-    const db = await openDb();
-    if (!db) return undefined;
-    return new Promise((resolve) => {
-      try {
-        const req = db.transaction(store).objectStore(store).get(key);
-        req.onsuccess = () => resolve(req.result);
-        req.onerror = () => resolve(undefined);
-      } catch (e) {
-        resolve(undefined);
-      }
-    });
-  }
-
-  async function idbPut(store, key, value) {
-    const db = await openDb();
-    if (!db) return false;
-    return new Promise((resolve) => {
-      try {
-        const tx = db.transaction(store, 'readwrite');
-        tx.objectStore(store).put(value, key);
-        tx.oncomplete = () => resolve(true);
-        tx.onerror = () => resolve(false);
-        tx.onabort = () => resolve(false);
-      } catch (e) {
-        resolve(false);
-      }
-    });
-  }
-
-  /** Huella de la lista: si no cambió nada, la app no necesita volver a dibujarla. */
-  function signature(tracks) {
-    let h = 5381;
-    for (const t of tracks) {
-      const text = `${t.contentUri}|${t.size}|${t.title}|${t.artist}|${t.album}|${t.duration}`;
-      for (let i = 0; i < text.length; i++) h = ((h << 5) + h + text.charCodeAt(i)) | 0;
-    }
-    return `${tracks.length}:${h}`;
-  }
-
-  /** Guarda la lista de canciones del teléfono para la próxima vez que se abra la app. */
-  async function saveCache(tracks) {
-    const items = tracks.filter(t => t.contentUri).map(t => ({
-      id: String(t.id).replace(/^lib_/, ''),
-      uri: t.contentUri,
-      name: t.fileName,
-      mime: t.mime,
-      size: t.size,
-      title: t.title,
-      artist: t.artist,
-      album: t.album,
-      duration: t.duration
-    }));
-    return idbPut('kv', 'library', { v: 1, savedAt: Date.now(), items });
-  }
-
-  /** Lee la lista guardada. Devuelve { tracks, sig } o null si no hay. */
-  async function loadCache() {
-    const rec = await idbGet('kv', 'library');
-    if (!rec || rec.v !== 1 || !Array.isArray(rec.items) || rec.items.length === 0) return null;
-    const tracks = rec.items.map(toTrack);
-    return { tracks, sig: signature(tracks) };
-  }
-
   /** Abre los ajustes de la app (por si el permiso quedó denegado y Android ya no pregunta). */
   async function openSettings() {
     const plugin = getPlugin();
@@ -246,170 +135,32 @@ const NocturneLibrary = (() => {
     track.file = null;
   }
 
-
-  // ---------------------------------------------------------------------------
-  // Portadas en miniatura (para las listas)
-  // Se piden solo cuando una fila aparece en pantalla, de pocas en pocas, y las últimas
-  // filas que aparecieron se atienden primero (así, al desplazarse rápido, no se acumulan).
-  // ---------------------------------------------------------------------------
-  const THUMB_SIZE = 160;
-  const thumbStack = [];
-  // Ritmo de lectura de portadas según lo que haga la persona:
-  //  normal → 2 a la vez · scroll → 1 cada ~250 ms (para no estorbar al desplazar) · off → ninguna (modo ligero)
-  const THUMB_MODES = { normal: { concurrency: 2, gap: 40 }, scroll: { concurrency: 1, gap: 250 }, off: { concurrency: 0, gap: 0 } };
-  let thumbMode = 'normal';
-  let thumbTimer = null;
-  const albumThumbs = new Map(); // las canciones de un mismo álbum comparten la misma portada
-  let thumbActive = 0;
-
-  function thumbsSupported() {
-    const plugin = getPlugin();
-    return !!(plugin && typeof plugin.getThumbnail === 'function');
-  }
-
-  /** ¿Esta pista de la biblioteca todavía no tiene portada y vale la pena pedirla? */
-  function needsThumb(track) {
-    return !!(track && track.contentUri && !track.cover && !track.thumb && !track._thumbDone && (track._thumbFails || 0) < 2);
-  }
-
-  function thumbKey(track) {
-    return track.album && track.artist ? 'a|' + track.album + '|' + track.artist : 'u|' + track.contentUri + '|' + track.size;
-  }
-
-  /** JPEG en base64 → URL corta (blob:). Así las listas largas no cargan megas de texto en el HTML. */
-  function base64ToBlobUrl(b64) {
-    const bin = atob(b64);
-    const bytes = new Uint8Array(bin.length);
-    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-    return URL.createObjectURL(new Blob([bytes], { type: 'image/jpeg' }));
-  }
-
-  function fetchThumb(track) {
-    const key = thumbKey(track);
-    let pending = albumThumbs.get(key);
-    if (!pending) {
-      pending = (async () => {
-        // 1) ¿ya se leyó antes? sale de la caché local, sin molestar al sistema
-        const rec = await idbGet('thumbs', key);
-        if (rec) {
-          if (rec.b64) return base64ToBlobUrl(rec.b64);
-          if (rec.none && Date.now() - rec.t < THUMB_NONE_TTL) return '';
-        }
-        // 2) primera vez: se pide al sistema y se guarda
-        const r = await getPlugin().getThumbnail({ uri: track.contentUri, size: THUMB_SIZE });
-        const b64 = r && r.cover ? r.cover : '';
-        idbPut('thumbs', key, b64 ? { b64, t: Date.now() } : { none: true, t: Date.now() });
-        return b64 ? base64ToBlobUrl(b64) : '';
-      })();
-      albumThumbs.set(key, pending);
-      pending.catch(() => albumThumbs.delete(key)); // un error no se queda guardado
-    }
-    return pending;
-  }
-
-  function pumpThumbs() {
-    const mode = THUMB_MODES[thumbMode];
-    while (thumbActive < mode.concurrency && thumbStack.length) {
-      const job = thumbStack.pop();
-      const track = job.track;
-      if (!needsThumb(track)) continue;
-      if (job.wanted && !job.wanted()) continue; // la fila ya salió de la pantalla: no vale la pena
-      thumbActive++;
-      fetchThumb(track)
-        .then((url) => {
-          if (url) track.thumb = url;
-          else track._thumbDone = true; // esta canción no trae portada
-          if (url && job.onReady) job.onReady(track, job.row);
-        })
-        .catch(() => { track._thumbFails = (track._thumbFails || 0) + 1; })
-        .then(() => {
-          thumbActive--;
-          // Pequeña pausa entre portadas para dejar respirar a la interfaz y al audio
-          if (thumbStack.length && !thumbTimer) {
-            thumbTimer = setTimeout(() => { thumbTimer = null; pumpThumbs(); }, THUMB_MODES[thumbMode].gap);
-          }
-        });
-    }
-  }
-
-  /** Pide la portada de una pista; cuando llega, avisa con onReady(track, row). */
-  function requestThumb(track, onReady, row, wanted) {
-    if (!thumbsSupported() || !needsThumb(track)) return;
-    thumbStack.push({ track, onReady, row, wanted });
-    if (thumbStack.length > 120) thumbStack.splice(0, thumbStack.length - 120); // solo importan las más recientes
-    pumpThumbs();
-  }
-
-  /** 'normal' | 'scroll' | 'off': qué tan rápido se leen las portadas. */
-  function setThumbMode(mode) {
-    if (!THUMB_MODES[mode] || mode === thumbMode) return;
-    thumbMode = mode;
-    if (mode !== 'off') pumpThumbs();
-  }
-
-  /** Permiso de fotos (Android 13+) para las portadas. Sin él las portadas suelen cargar igual. */
-  async function hasImagesPermission() {
-    const plugin = getPlugin();
-    if (!plugin || typeof plugin.hasImagesPermission !== 'function') return false;
-    try {
-      const result = await plugin.hasImagesPermission();
-      return !!(result && result.granted);
-    } catch (e) {
-      return false;
-    }
-  }
-
-  async function ensureImagesPermission() {
-    const plugin = getPlugin();
-    if (!plugin || typeof plugin.requestImagesPermission !== 'function') return false;
-    try {
-      const result = await plugin.requestImagesPermission();
-      return !!(result && result.granted);
-    } catch (e) {
-      return false;
-    }
-  }
-
-
-  /** ¿Este APK sabe eliminar canciones del teléfono? */
-  function canDelete() {
-    const plugin = getPlugin();
-    return !!(plugin && typeof plugin.deleteTracks === 'function');
+  /** Motor nativo: ¿faltan portada y etiquetas de esta pista? */
+  function needsMetadata(track) {
+    return !!(track && track.contentUri && !track._metaDone);
   }
 
   /**
-   * Elimina canciones del teléfono. Android muestra su propio aviso de confirmación.
-   * Devuelve { deleted: [uri…], cancelled } con lo que realmente se borró.
+   * Motor nativo: el audio lo reproduce Android directamente, así que el archivo solo se lee
+   * para sacar portada, artista y álbum, y se libera de memoria enseguida.
    */
-  async function deleteTracks(tracks) {
-    const plugin = getPlugin();
-    if (!plugin || typeof plugin.deleteTracks !== 'function') throw new Error('Este APK no incluye la función de eliminar.');
-    const uris = tracks.map(t => t.contentUri).filter(Boolean);
-    const result = await plugin.deleteTracks({ uris });
-    return { deleted: (result && result.deleted) || [], cancelled: !!(result && result.cancelled) };
+  function resolveMetadata(track) {
+    if (!needsMetadata(track)) return Promise.resolve(track);
+    if (track._metaResolving) return track._metaResolving;
+
+    track._metaResolving = (async () => {
+      await resolve(track);
+      track._metaDone = true;
+      release(track);
+      return track;
+    })();
+
+    const clear = () => { track._metaResolving = null; };
+    track._metaResolving.then(clear, clear);
+    return track._metaResolving;
   }
 
-
-  /** ¿Este APK sabe abrir el menú de compartir? */
-  function canShare() {
-    const plugin = getPlugin();
-    return !!(plugin && typeof plugin.shareTracks === 'function');
-  }
-
-  /** Abre el menú de compartir de Android con estas canciones. */
-  async function shareTracks(tracks) {
-    const plugin = getPlugin();
-    if (!plugin || typeof plugin.shareTracks !== 'function') throw new Error('Este APK no incluye la función de compartir.');
-    const uris = tracks.map(t => t.contentUri).filter(Boolean);
-    await plugin.shareTracks({ uris });
-  }
-
-  return {
-    isAvailable, status, hasPermission, scan, openSettings, needsResolve, resolve, release,
-    thumbsSupported, needsThumb, requestThumb, setThumbMode, hasImagesPermission, ensureImagesPermission,
-    canDelete, deleteTracks, canShare, shareTracks,
-    saveCache, loadCache, signature
-  };
+  return { isAvailable, status, hasPermission, scan, openSettings, needsResolve, resolve, release, needsMetadata, resolveMetadata };
 })();
 
 window.NocturneLibrary = NocturneLibrary;
