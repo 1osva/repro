@@ -513,6 +513,32 @@ button { font-family: inherit; color: inherit; cursor: pointer; }
 .mini-artist { margin-top: 1px; font-size: 0.75rem; color: var(--text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .mini-player .icon-btn { color: #fff; }
 
+/* Mini visualizador: barritas que reaccionan al audio con el reproductor minimizado */
+.mini-bars {
+  --mb-1: var(--accent-cyan);
+  --mb-2: var(--accent-purple);
+  flex: none;
+  display: flex;
+  align-items: flex-end;
+  gap: 3px;
+  width: 30px;
+  height: 24px;
+  margin: 0 8px 0 4px;
+  opacity: 0;
+  transition: opacity 0.25s ease;
+  pointer-events: none;
+}
+.mini-bars.on { opacity: 1; }
+.mini-bars i {
+  flex: 1;
+  height: 100%;
+  border-radius: 2px;
+  background: linear-gradient(to top, var(--mb-2), var(--mb-1));
+  transform: scaleY(0.12);
+  transform-origin: bottom;
+  will-change: transform;
+}
+
 /* ---------- Hoja inferior y avisos ---------- */
 .sheet-backdrop { position: fixed; inset: 0; z-index: 50; background: rgba(2, 2, 12, 0.62); }
 .sheet {
@@ -612,152 +638,3 @@ html.lite *, html.lite *::before, html.lite *::after {
 
 .about-line { margin-top: 6px; font-size: 0.84rem; color: var(--text-secondary); line-height: 1.4; }
 .about-line:first-of-type { margin-top: 0; }
-
-/* ==========================================================================
-   COLOR DE LA PORTADA
-   js/app.js cambia --accent-* (reproductor, barra de tiempo, botones, mini reproductor)
-   y --soft-* (versión más ligera para las pantallas de biblioteca, listas y ajustes).
-   ========================================================================== */
-@property --accent-purple      { syntax: '<color>'; inherits: true; initial-value: #8b6cff; }
-@property --accent-cyan        { syntax: '<color>'; inherits: true; initial-value: #4d8cff; }
-@property --accent-purple-glow { syntax: '<color>'; inherits: true; initial-value: rgba(124, 92, 255, 0.45); }
-@property --accent-cyan-glow   { syntax: '<color>'; inherits: true; initial-value: rgba(77, 140, 255, 0.45); }
-@property --soft-purple        { syntax: '<color>'; inherits: true; initial-value: #a898ff; }
-@property --soft-cyan          { syntax: '<color>'; inherits: true; initial-value: #8fb0ff; }
-@property --soft-purple-glow   { syntax: '<color>'; inherits: true; initial-value: rgba(124, 92, 255, 0.22); }
-@property --soft-cyan-glow     { syntax: '<color>'; inherits: true; initial-value: rgba(77, 140, 255, 0.22); }
-
-:root {
-  --soft-purple: #a898ff;
-  --soft-cyan: #8fb0ff;
-  --soft-purple-glow: rgba(124, 92, 255, 0.22);
-  --soft-cyan-glow: rgba(77, 140, 255, 0.22);
-  /* El color cambia al instante: animarlo obligaba a recalcular toda la página justo al cambiar de canción */
-}
-
-/* Biblioteca, listas y ajustes usan la versión ligera del color */
-.screens {
-  --accent-purple: var(--soft-purple);
-  --accent-cyan: var(--soft-cyan);
-  --accent-purple-glow: var(--soft-purple-glow);
-  --accent-cyan-glow: var(--soft-cyan-glow);
-}
-
-@supports (color: color-mix(in srgb, red 50%, blue)) {
-  .icon-btn:active,
-  .btn-ctrl:active { background: color-mix(in srgb, var(--accent-purple) 18%, transparent); }
-  .track-row.active { background: color-mix(in srgb, var(--accent-purple) 14%, transparent); }
-  .badge { background: color-mix(in srgb, var(--accent-cyan) 16%, transparent); }
-  .chip-primary {
-    background: linear-gradient(135deg,
-      color-mix(in srgb, var(--accent-purple) 46%, #120e30),
-      color-mix(in srgb, var(--accent-cyan) 46%, #0e1634));
-  }
-  #btnPrev, #btnNext { color: color-mix(in srgb, var(--accent-purple) 26%, #fff); }
-  .progress-handle { background: color-mix(in srgb, var(--accent-purple) 30%, #fff); }
-  .btn-play {
-    background:
-      linear-gradient(color-mix(in srgb, var(--accent-purple) 22%, #0d0b24), color-mix(in srgb, var(--accent-cyan) 18%, #0d0b24)) padding-box,
-      linear-gradient(135deg, var(--accent-purple), var(--accent-cyan)) border-box;
-  }
-}
-
-/* Diagnóstico de audio (Ajustes → Acerca de) */
-.diag { margin-top: 12px; }
-.diag summary { cursor: pointer; font-size: 0.84rem; color: var(--accent-purple); }
-.diag-log {
-  margin-top: 8px;
-  max-height: 260px;
-  overflow: auto;
-  padding: 10px;
-  border-radius: 12px;
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid var(--line);
-  color: var(--text-secondary);
-  font-family: var(--font-mono);
-  font-size: 0.68rem;
-  line-height: 1.5;
-  white-space: pre-wrap;
-  word-break: break-word;
-  user-select: text;
-  -webkit-user-select: text;
-}
-.diag-actions { display: flex; gap: 8px; margin-top: 8px; }
-
-/* Barra de tiempo táctil (tocar o deslizar) */
-.progress-track { touch-action: none; }
-.progress-track::before { inset: -22px 0; }
-.progress-handle { transition: width 0.12s ease, height 0.12s ease; }
-.progress-track.scrubbing .progress-handle { width: 24px; height: 24px; }
-
-/* ---------- Selección de varias canciones (mantener presionado) ---------- */
-.sel-circle {
-  display: none;
-  flex: none;
-  align-items: center;
-  justify-content: center;
-  width: 26px;
-  height: 26px;
-  margin: 0 7px;
-  border-radius: 50%;
-  border: 2px solid rgba(190, 190, 205, 0.45); /* círculo grisáceo: sin seleccionar */
-  color: #fff;
-  transition: background 0.15s ease, border-color 0.15s ease;
-}
-.sel-circle svg { width: 15px; height: 15px; opacity: 0; transition: opacity 0.12s ease; }
-body.selecting .sel-circle { display: flex; }
-body.selecting .track-row .row-menu { display: none; }
-.track-row.selected .sel-circle { background: var(--accent-purple); border-color: var(--accent-purple); } /* con paloma blanca */
-.track-row.selected .sel-circle svg { opacity: 1; }
-.track-row.selected { background: rgba(124, 92, 255, 0.15); }
-
-.select-bar {
-  position: fixed;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  z-index: 45; /* sobre la barra inferior; la hoja de confirmación (60) queda encima */
-  max-width: 560px;
-  margin: 0 auto;
-  padding: 8px 12px calc(10px + var(--safe-bottom));
-  border-radius: 22px 22px 0 0;
-  background: #15123b;
-  border: 1px solid var(--line);
-  border-bottom: 0;
-  box-shadow: 0 -10px 34px rgba(0, 0, 0, 0.45);
-}
-.select-bar[hidden] { display: none; }
-.select-top { display: flex; align-items: center; gap: 8px; }
-.select-count { flex: 1; font-weight: 700; font-size: 0.95rem; color: var(--text-primary); }
-.select-top .chip { height: 34px; padding: 0 14px; }
-.select-actions { display: flex; gap: 8px; margin-top: 6px; }
-.select-act {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 4px;
-  padding: 9px 4px 8px;
-  border: 0;
-  border-radius: 14px;
-  background: rgba(255, 255, 255, 0.05);
-  color: var(--text-primary);
-  font-family: inherit;
-  font-size: 0.78rem;
-  font-weight: 600;
-}
-.select-act[hidden] { display: none; }
-.select-act:active { background: rgba(255, 255, 255, 0.12); }
-.select-act.active { color: var(--accent-purple); }
-.select-act.danger { color: #ff8da1; }
-
-/* Modo ligero: se activa solo si la interfaz se traba mientras suena música */
-body.lite *,
-body.lite *::before,
-body.lite *::after {
-  transition: none !important;
-  animation: none !important;
-  scroll-behavior: auto !important;
-}
-body.lite .select-bar { box-shadow: none; }
-
