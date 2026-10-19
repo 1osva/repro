@@ -210,17 +210,16 @@ class Visualizer {
 
   /** Latencia total entre analizar el audio y oírlo (ms), más el ajuste manual. */
   _latencyMs() {
-    const ctx = this.audioEngine && this.audioEngine.ctx;
-    let ms = 0;
-    if (ctx) ms = ((ctx.outputLatency || 0) + (ctx.baseLatency || 0)) * 1000;
-    return Math.max(0, Math.min(600, ms + (this.syncOffsetMs || 0)));
+    const eng = this.audioEngine;
+    const ms = eng && eng.getOutputLatencyMs ? eng.getOutputLatencyMs() : 0;
+    return Math.max(0, Math.min(1000, ms + (this.syncOffsetMs || 0)));
   }
 
   /** Guarda lo que "suena" en este instante para mostrarlo cuando de verdad se oiga. */
   _record(analyser, now) {
     const n = analyser.frequencyBinCount;
     if (this._ring.length === 0 || this._ring[0].freq.length !== n) {
-      this._ring = Array.from({ length: 40 }, () => ({ t: 0, freq: new Uint8Array(n), time: new Uint8Array(n) }));
+      this._ring = Array.from({ length: 90 }, () => ({ t: 0, freq: new Uint8Array(n), time: new Uint8Array(n) }));
       this._ringHead = 0;
       this._ringCount = 0;
     }
@@ -284,8 +283,7 @@ class Visualizer {
 
     if (!snap) {
       if (!this.enabled && isPlaying) return; // animación apagada: queda solo la portada
-      // Motor nativo: suena, pero todavía no hay espectro que dibujar
-      this.drawIdleState(w, h, isPlaying && !analyser);
+      this.drawIdleState(w, h);
       return;
     }
 
@@ -355,7 +353,7 @@ class Visualizer {
     }
   }
 
-  drawIdleState(w, h, nativeNoSpectrum = false) {
+  drawIdleState(w, h) {
     const ctx = this.ctx;
     this.idlePhase += 0.02;
 
@@ -376,7 +374,7 @@ class Visualizer {
     ctx.font = '600 11px "Plus Jakarta Sans", sans-serif';
     ctx.letterSpacing = '2px';
     ctx.textAlign = 'center';
-    ctx.fillText(nativeNoSpectrum ? 'MOTOR NATIVO · SIN ESPECTRO AÚN' : 'ELIGE UNA CANCIÓN', w / 2, h / 2 + 35);
+    ctx.fillText('ELIGE UNA CANCIÓN', w / 2, h / 2 + 35);
     ctx.restore();
   }
 
@@ -603,7 +601,7 @@ class MiniBars {
 
   _shouldRun() {
     const e = this.audioEngine;
-    if (!e || !e._initialized || !e.analyser || e.native) return false;
+    if (!e || !e.analyser) return false;
     if (document.hidden) return false;
     if (this.visualizer && this.visualizer.enabled === false) return false;
     if (this.visualizer && this.visualizer.paused === false) return false; // reproductor grande abierto

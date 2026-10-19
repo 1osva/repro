@@ -224,6 +224,12 @@ class AudioEngine {
   /** Quita la siguiente canción ya precargada (solo hace algo el motor nativo). */
   clearNext() {}
 
+  /** Retraso entre lo que se analiza y lo que se oye (búfer + salida/Bluetooth), en ms. */
+  getOutputLatencyMs() {
+    const c = this.ctx;
+    return c ? ((c.outputLatency || 0) + (c.baseLatency || 0)) * 1000 : 0;
+  }
+
   /**
    * Deja lista la siguiente canción en el reproductor libre ANTES del crossfade.
    * Así, cuando llega el momento, solo hay que darle play: no se carga ni se decodifica

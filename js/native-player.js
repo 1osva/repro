@@ -6,8 +6,9 @@
  *    negocia el códec Bluetooth (SBC, AAC, LDAC, LHDC...) con los audífonos.
  *  - Archivos sueltos (blob:) y demos sintéticas -> el motor Web Audio de siempre.
  *
- * Fase 1: reproducción, pausa, búsqueda, volumen, entrada suave y paso sin huecos a la siguiente.
- * Todavía NO hay en modo nativo: crossfade, ecualizador ni espectro de las barras.
+ * Incluye: reproducción, pausa, búsqueda, volumen, entrada suave, paso sin huecos a la siguiente
+ * y espectro para las barras del visualizador.
+ * Todavía NO hay en modo nativo: crossfade ni ecualizador.
  */
 const NocturneNative = (() => {
   const KEY = 'nocturne.nativeEngine';
@@ -42,6 +43,62 @@ const NocturneNative = (() => {
   return { isAvailable, isEnabled, setEnabled, createEngine, noop };
 })();
 
+/**
+ * Hace de AnalyserNode para el visualizador: guarda el último cuadro de espectro que manda el
+ * reproductor nativo. El cálculo solo corre en el teléfono mientras alguien lo pide (el
+ * visualizador a la vista); si deja de pedirlo, se apaga solo.
+ */
+class NativeSpectrum {
+  constructor(plugin) {
+    this.plugin = plugin;
+    this.frequencyBinCount = 128;
+    this.freq = new Uint8Array(128);
+    this.time = new Uint8Array(128).fill(128);
+    this.latency = 150; // ms; el reproductor lo mide y lo actualiza
+    this.active = false;
+    this.lastUse = 0;
+    this._watchdog = setInterval(() => {
+      if (this.active && performance.now() - this.lastUse > 1500) this._set(false);
+    }, 1000);
+  }
+
+  _set(on) {
+    this.active = on;
+    Promise.resolve(this.plugin.setSpectrum({ enabled: on })).catch(NocturneNative.noop);
+  }
+
+  _touch() {
+    this.lastUse = performance.now();
+    if (!this.active) this._set(true);
+  }
+
+  push(e) {
+    if (!e) return;
+    NativeSpectrum._decode(e.freq, this.freq);
+    NativeSpectrum._decode(e.time, this.time);
+    if (typeof e.latency === 'number') this.latency = e.latency;
+  }
+
+  static _decode(b64, target) {
+    if (!b64) return;
+    try {
+      const bin = atob(b64);
+      const n = Math.min(bin.length, target.length);
+      for (let i = 0; i < n; i++) target[i] = bin.charCodeAt(i);
+    } catch (err) { /* cuadro dañado: se ignora */ }
+  }
+
+  getByteFrequencyData(arr) {
+    this._touch();
+    arr.set(this.freq.length > arr.length ? this.freq.subarray(0, arr.length) : this.freq);
+  }
+
+  getByteTimeDomainData(arr) {
+    this._touch();
+    arr.set(this.time.length > arr.length ? this.time.subarray(0, arr.length) : this.time);
+  }
+}
+
 class NativeAudioEngine extends AudioEngine {
   constructor(plugin) {
     super();
@@ -59,8 +116,19 @@ class NativeAudioEngine extends AudioEngine {
     this.onNativeState = null; // (playing:boolean) => void  (llamadas, foco de audio, audífonos desconectados...)
     this.onNativeError = null; // (message:string) => void
 
+    this.spectrum = new NativeSpectrum(plugin);
     Promise.resolve(plugin.addListener('player', (e) => this._onEvent(e))).catch(NocturneNative.noop);
+    Promise.resolve(plugin.addListener('spectrum', (e) => this.spectrum.push(e))).catch(NocturneNative.noop);
     Promise.resolve(plugin.setVolume({ volume: this.volume })).catch(NocturneNative.noop);
+  }
+
+  // Con una canción nativa el visualizador lee el espectro del reproductor nativo; con una
+  // de Web Audio (archivo suelto, demo) sigue usando el AnalyserNode de siempre.
+  get analyser() { return this.native ? this.spectrum : this._webAnalyser; }
+  set analyser(v) { this._webAnalyser = v; }
+
+  getOutputLatencyMs() {
+    return this.native ? this.spectrum.latency : super.getOutputLatencyMs();
   }
 
   // ------------------------------------------------------------------ eventos nativos

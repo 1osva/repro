@@ -26,7 +26,7 @@ if (!fs.existsSync(androidDir)) fail('no existe android/. Ejecuta antes: npx cap
 if (!fs.existsSync(javaDir)) fail('no existe ' + javaDir + ' (¿cambió el appId?)');
 
 // 1) Código nativo: se sustituye el paquete por el appId
-const javaFiles = ['MediaLibraryPlugin.java', 'MediaControlsPlugin.java', 'MediaNotificationService.java', 'NativeAudioPlayer.java', 'NativePlayerPlugin.java', 'MainActivity.java'];
+const javaFiles = ['MediaLibraryPlugin.java', 'MediaControlsPlugin.java', 'MediaNotificationService.java', 'NativeAudioPlayer.java', 'SpectrumProcessor.java', 'NativePlayerPlugin.java', 'MainActivity.java'];
 for (const file of javaFiles) {
   const src = fs.readFileSync(path.join(root, 'native', file), 'utf8').replace(/__APP_PACKAGE__/g, appId);
   fs.writeFileSync(path.join(javaDir, file), src);

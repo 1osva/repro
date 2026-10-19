@@ -1,5 +1,7 @@
 package __APP_PACKAGE__;
 
+import android.util.Base64;
+
 import com.getcapacitor.JSObject;
 import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
@@ -16,6 +18,8 @@ import com.getcapacitor.annotation.CapacitorPlugin;
  *   .seek({ position })           // segundos
  *   .setVolume({ volume })        // 0..1
  *   .stop()
+ *   .setSpectrum({ enabled })     // activa/apaga el espectro para las barras
+ *   .addListener('spectrum', ({ freq, time, latency }) => ...)   // base64, 128 bytes cada uno
  *   .addListener('player', ({ event, id, position, duration, playing, message }) => ...)
  *       event: 'time' | 'state' | 'transition' | 'ended' | 'error'
  */
@@ -39,6 +43,16 @@ public class NativePlayerPlugin extends Plugin {
                 data.put("playing", playing);
                 if (message != null) data.put("message", message);
                 notifyListeners("player", data);
+            }
+        });
+        player().setSpectrumSink(new NativeAudioPlayer.SpectrumSink() {
+            @Override
+            public void onSpectrum(byte[] freq, byte[] time, int latencyMs) {
+                JSObject data = new JSObject();
+                data.put("freq", Base64.encodeToString(freq, Base64.NO_WRAP));
+                data.put("time", Base64.encodeToString(time, Base64.NO_WRAP));
+                data.put("latency", latencyMs);
+                notifyListeners("spectrum", data);
             }
         });
     }
@@ -122,6 +136,18 @@ public class NativePlayerPlugin extends Plugin {
             @Override
             public void run() {
                 player().setVolume(v);
+                call.resolve();
+            }
+        });
+    }
+
+    @PluginMethod
+    public void setSpectrum(final PluginCall call) {
+        final boolean on = call.getBoolean("enabled", false);
+        player().post(new Runnable() {
+            @Override
+            public void run() {
+                player().setSpectrumEnabled(on);
                 call.resolve();
             }
         });

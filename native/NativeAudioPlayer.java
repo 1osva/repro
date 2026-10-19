@@ -6,11 +6,16 @@ import android.os.Handler;
 import android.os.Looper;
 
 import androidx.media3.common.AudioAttributes;
+import androidx.media3.common.audio.AudioProcessor;
+import androidx.media3.common.util.UnstableApi;
 import androidx.media3.common.C;
 import androidx.media3.common.MediaItem;
 import androidx.media3.common.PlaybackException;
 import androidx.media3.common.Player;
+import androidx.media3.exoplayer.DefaultRenderersFactory;
 import androidx.media3.exoplayer.ExoPlayer;
+import androidx.media3.exoplayer.audio.AudioSink;
+import androidx.media3.exoplayer.audio.DefaultAudioSink;
 
 /**
  * Reproductor nativo (Media3 / ExoPlayer). Reproduce directamente los content:// de la
@@ -21,13 +26,20 @@ import androidx.media3.exoplayer.ExoPlayer;
  * Todo se ejecuta en el hilo principal (ExoPlayer lo exige). La cola es de a lo más dos
  * elementos: la canción actual y la siguiente (reproducción sin huecos).
  */
+@UnstableApi
 final class NativeAudioPlayer {
 
     interface EventSink {
         void onEvent(String name, String id, double position, double duration, boolean playing, String message);
     }
 
+    /** Cuadros del espectro (para las barras del visualizador). */
+    interface SpectrumSink {
+        void onSpectrum(byte[] freq, byte[] time, int latencyMs);
+    }
+
     private static final long TIME_TICK_MS = 250;
+    private static final long SPECTRUM_TICK_MS = 33; // ~30 cuadros por segundo
     private static final long FADE_STEP_MS = 30;
 
     private static NativeAudioPlayer instance;
@@ -47,6 +59,13 @@ final class NativeAudioPlayer {
     private final Handler main = new Handler(Looper.getMainLooper());
     private ExoPlayer player;
     private volatile EventSink sink;
+    private volatile SpectrumSink spectrumSink;
+
+    private final SpectrumProcessor spectrum = new SpectrumProcessor();
+    private boolean spectrumOn = false;
+    // Cuánto "se adelanta" el audio analizado respecto a lo que se oye (búfer + salida/Bluetooth)
+    private volatile int latencyMs = 150;
+    private boolean measureLatency = false;
 
     private float userVolume = 0.8f;
     private float fade = 1f;
@@ -56,14 +75,37 @@ final class NativeAudioPlayer {
         @Override
         public void run() {
             if (player != null && player.isPlaying()) {
+                measureLatencyIfNeeded();
                 emit("time");
                 main.postDelayed(this, TIME_TICK_MS);
             }
         }
     };
 
+    private final Runnable spectrumTicker = new Runnable() {
+        @Override
+        public void run() {
+            if (player == null || !spectrumOn || !player.isPlaying()) return;
+            SpectrumSink s = spectrumSink;
+            if (s != null) s.onSpectrum(spectrum.frequencyBytes(), spectrum.timeBytes(), latencyMs);
+            main.postDelayed(this, SPECTRUM_TICK_MS);
+        }
+    };
+
     private NativeAudioPlayer(Context appContext) {
-        player = new ExoPlayer.Builder(appContext)
+        // El procesador de espectro va dentro de la salida de audio: deja pasar el sonido intacto
+        final SpectrumProcessor tap = spectrum;
+        DefaultRenderersFactory renderers = new DefaultRenderersFactory(appContext) {
+            @Override
+            protected AudioSink buildAudioSink(Context context, boolean enableFloatOutput, boolean enableAudioTrackPlaybackParams) {
+                return new DefaultAudioSink.Builder(context)
+                    .setEnableFloatOutput(enableFloatOutput)
+                    .setEnableAudioTrackPlaybackParams(enableAudioTrackPlaybackParams)
+                    .setAudioProcessors(new AudioProcessor[] { tap })
+                    .build();
+            }
+        };
+        player = new ExoPlayer.Builder(appContext, renderers)
             .setAudioAttributes(
                 new AudioAttributes.Builder()
                     .setUsage(C.USAGE_MEDIA)
@@ -83,8 +125,13 @@ final class NativeAudioPlayer {
             @Override
             public void onIsPlayingChanged(boolean isPlaying) {
                 main.removeCallbacks(ticker);
-                if (isPlaying) main.post(ticker);
-                else emit("time");
+                main.removeCallbacks(spectrumTicker);
+                if (isPlaying) {
+                    main.post(ticker);
+                    if (spectrumOn) main.post(spectrumTicker);
+                } else {
+                    emit("time");
+                }
             }
 
             @Override
@@ -108,6 +155,34 @@ final class NativeAudioPlayer {
 
     void setSink(EventSink s) {
         sink = s;
+    }
+
+    void setSpectrumSink(SpectrumSink s) {
+        spectrumSink = s;
+    }
+
+    /** Activa o apaga el cálculo del espectro (solo mientras el visualizador está a la vista). */
+    void setSpectrumEnabled(boolean on) {
+        spectrumOn = on;
+        spectrum.setEnabled(on);
+        main.removeCallbacks(spectrumTicker);
+        if (on && player != null && player.isPlaying()) main.post(spectrumTicker);
+    }
+
+    /**
+     * El procesador va por delante de lo que se escucha. Poco después de empezar una canción
+     * (cuando aún no hubo saltos) se compara el audio procesado con la posición audible: la
+     * diferencia es el retraso que el visualizador debe compensar.
+     */
+    private void measureLatencyIfNeeded() {
+        if (!measureLatency || player == null) return;
+        long pos = player.getCurrentPosition();
+        if (pos < 700 || pos > 5000) return;
+        long ahead = spectrum.processedMs() - pos;
+        if (ahead >= 0 && ahead <= 3000) {
+            latencyMs = (int) ahead;
+            measureLatency = false;
+        }
     }
 
     void post(Runnable r) {
@@ -148,6 +223,7 @@ final class NativeAudioPlayer {
         if (player == null) return;
         player.setMediaItem(item(uri, id));
         player.prepare();
+        measureLatency = true;
         applyFade(fadeInMs, true);
         player.setPlayWhenReady(true);
     }
@@ -185,6 +261,7 @@ final class NativeAudioPlayer {
     }
 
     void seek(long ms) {
+        measureLatency = false; // tras un salto la cuenta ya no parte de cero
         if (player != null) player.seekTo(Math.max(0, ms));
     }
 
@@ -203,6 +280,7 @@ final class NativeAudioPlayer {
     void release() {
         main.removeCallbacksAndMessages(null);
         sink = null;
+        spectrumSink = null;
         if (player != null) {
             player.release();
             player = null;
